@@ -58,6 +58,17 @@ final class GoogleCalendarViewState: ObservableObject {
         Task { await connection.setEnabled(enabled) }
     }
 
+    @Published private(set) var isRefreshing = false
+
+    func refreshNow() {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        Task {
+            await connection.refreshNow()
+            isRefreshing = false
+        }
+    }
+
     /// The Client Secret field's binding -- backed by the connection's own
     /// Keychain-persisted value, read/written synchronously via a cached
     /// copy since SwiftUI text fields need a plain String binding, not an

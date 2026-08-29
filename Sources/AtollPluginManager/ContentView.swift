@@ -228,11 +228,16 @@ struct ContentView: View {
                 }
                 .disabled(!googleCalendar.isAuthenticated)
 
+                Button(googleCalendar.isRefreshing ? "Refreshing…" : "Refresh Now") {
+                    googleCalendar.refreshNow()
+                }
+                .disabled(!googleCalendar.isAuthenticated || !googleCalendar.isEnabled || googleCalendar.isRefreshing)
+
                 Link("Open Console", destination: URL(string: "https://console.cloud.google.com/apis/credentials")!)
                     .font(.caption)
             }
 
-            Text("While the OAuth consent screen is in \"Testing\" publish status, Google expires the connection after 7 days — reconnect here when that happens.")
+            Text("Polls Google Calendar every 30 seconds while connected. Use Refresh Now for an immediate check right after editing an event. While the OAuth consent screen is in \"Testing\" publish status, Google expires the connection after 7 days — reconnect here when that happens.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

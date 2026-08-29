@@ -23,10 +23,11 @@ actor GoogleCalendarConnection {
     /// all Atoll has until the next poll).
     private static let lookBehind: TimeInterval = 24 * 3600
     private static let lookAhead: TimeInterval = 60 * 24 * 3600
-    /// Google API quota is generous for a single desktop app; this is about
-    /// keeping calendar data reasonably fresh without polling pointlessly
-    /// often for something that isn't as latency-sensitive as Now Playing state.
-    private static let pollInterval: TimeInterval = 180
+    /// Google API quota is generous for a single desktop app (well under
+    /// both the daily project quota and the per-user-per-100s limit at this
+    /// rate) -- short enough that a user editing an event in Google Calendar
+    /// and immediately checking Atoll sees it within moments, not minutes.
+    private static let pollInterval: TimeInterval = 30
 
     private let relay: any CalendarRelay
     private let oauth: GoogleCalendarOAuthService
@@ -184,6 +185,14 @@ actor GoogleCalendarConnection {
     func resyncRegistration() async {
         guard isAuthenticated, isEnabled else { return }
         isRegistered = false
+        await pollOnce()
+    }
+
+    /// Explicit user-triggered refresh, independent of the poll loop's own
+    /// schedule -- doesn't reset isRegistered, so a healthy connection just
+    /// republishes immediately without an unnecessary re-register round trip.
+    func refreshNow() async {
+        guard isAuthenticated, isEnabled else { return }
         await pollOnce()
     }
 
