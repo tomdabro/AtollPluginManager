@@ -21,10 +21,19 @@ enum AtollRPCConnectionState: Equatable, Sendable {
     case failed(String)
 }
 
+/// What a `PluginConnection` needs to relay live activities — narrows
+/// `AtollRPCClient` down to just the three activity calls so plugin relay
+/// code can be tested against a fake without a real Atoll connection.
+protocol ActivityRelay: Actor {
+    func presentLiveActivity(_ descriptor: AtollLiveActivityDescriptor) async throws
+    func updateLiveActivity(_ descriptor: AtollLiveActivityDescriptor) async throws
+    func dismissLiveActivity(activityID: String) async throws
+}
+
 /// Owns the WebSocket connection to Atoll: connect/reconnect with backoff,
 /// request/check authorization once, and issue live-activity / lock-screen /
 /// notch RPC calls on behalf of registered plugins.
-actor AtollRPCClient {
+actor AtollRPCClient: ActivityRelay {
     private let bundleIdentifier: String
     private let host: String
     private let port: UInt16

@@ -15,16 +15,32 @@ struct AtollPluginManagerApp: App {
     /// the broker are invisible to it.
     static let bundleIdentifier = "com.atollpluginmanager.broker"
 
-    @StateObject private var connectionModel = ConnectionStatusModel(
-        client: AtollRPCClient(bundleIdentifier: AtollPluginManagerApp.bundleIdentifier)
-    )
+    @StateObject private var connectionModel: ConnectionStatusModel
+    @StateObject private var discovery: PluginDiscovery
+    @StateObject private var connectionManager: PluginConnectionManager
+
+    init() {
+        let client = AtollRPCClient(bundleIdentifier: AtollPluginManagerApp.bundleIdentifier)
+        _connectionModel = StateObject(wrappedValue: ConnectionStatusModel(client: client))
+        let discovery = PluginDiscovery()
+        _discovery = StateObject(wrappedValue: discovery)
+        _connectionManager = StateObject(wrappedValue: PluginConnectionManager(
+            discovery: discovery,
+            relay: client,
+            brokerBundleIdentifier: AtollPluginManagerApp.bundleIdentifier
+        ))
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(connectionModel)
+                .environmentObject(discovery)
+                .environmentObject(connectionManager)
                 .task {
                     await connectionModel.start()
+                    discovery.start()
+                    connectionManager.start()
                 }
         }
         .windowResizability(.contentSize)
