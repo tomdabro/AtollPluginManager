@@ -13,11 +13,18 @@ import Network
 import AtollExtensionKit
 @testable import AtollPluginManager
 
-/// Records every call instead of talking to a real Atoll.
-actor FakeActivityRelay: ActivityRelay {
+/// Records every call instead of talking to a real Atoll. Conforms to both
+/// relay protocols so the same fake covers live-activity and media-source
+/// connection tests.
+actor FakeRelay: ActivityRelay, MediaRelay {
     private(set) var presented: [AtollLiveActivityDescriptor] = []
     private(set) var updated: [AtollLiveActivityDescriptor] = []
     private(set) var dismissedIDs: [String] = []
+
+    private(set) var registeredSources: [String] = []
+    private(set) var unregisteredSources: [String] = []
+    private(set) var publishedStates: [(sourceID: String, title: String, isPlaying: Bool)] = []
+    private var onMediaCommand: (@MainActor (String, AtollMediaCommand) -> Void)?
 
     func presentLiveActivity(_ descriptor: AtollLiveActivityDescriptor) async throws {
         presented.append(descriptor)
@@ -29,6 +36,36 @@ actor FakeActivityRelay: ActivityRelay {
 
     func dismissLiveActivity(activityID: String) async throws {
         dismissedIDs.append(activityID)
+    }
+
+    func registerMediaSource(sourceID: String, name: String, supportsSeek: Bool, supportsSkip: Bool) async throws {
+        registeredSources.append(sourceID)
+    }
+
+    func unregisterMediaSource(sourceID: String) async throws {
+        unregisteredSources.append(sourceID)
+    }
+
+    func publishNowPlayingState(
+        sourceID: String,
+        title: String,
+        artist: String,
+        album: String,
+        artworkBase64: String?,
+        isPlaying: Bool,
+        elapsedTime: TimeInterval,
+        duration: TimeInterval?
+    ) async throws {
+        publishedStates.append((sourceID: sourceID, title: title, isPlaying: isPlaying))
+    }
+
+    func setOnMediaCommand(_ handler: @escaping @MainActor (String, AtollMediaCommand) -> Void) {
+        onMediaCommand = handler
+    }
+
+    /// Test hook: simulates Atoll pushing a command notification.
+    func simulateMediaCommand(_ command: AtollMediaCommand, to sourceID: String) async {
+        await onMediaCommand?(sourceID, command)
     }
 }
 
@@ -76,6 +113,38 @@ final class FakePluginServer {
         }
     }
 
+    private var receiveBuffer = Data()
+
+    /// Reads one newline-delimited line the broker wrote to this connection
+    /// (e.g. a `mediaCommand`), buffering across multiple socket reads.
+    func readLine(timeout: TimeInterval = 2) async throws -> Data {
+        if let newlineIndex = receiveBuffer.firstIndex(of: 0x0A) {
+            let line = receiveBuffer[..<newlineIndex]
+            receiveBuffer.removeSubrange(...newlineIndex)
+            return Data(line)
+        }
+        guard let connection else { throw AtollRPCError(code: RPCErrorCode.internalError, message: "no connection") }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let chunk: Data? = await withCheckedContinuation { continuation in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { data, _, _, _ in
+                    continuation.resume(returning: data)
+                }
+            }
+            if let chunk, !chunk.isEmpty {
+                receiveBuffer.append(chunk)
+                if let newlineIndex = receiveBuffer.firstIndex(of: 0x0A) {
+                    let line = receiveBuffer[..<newlineIndex]
+                    receiveBuffer.removeSubrange(...newlineIndex)
+                    return Data(line)
+                }
+            }
+        }
+        throw AtollRPCError(code: RPCErrorCode.internalError, message: "timed out waiting for a line")
+    }
+
+
     func stop() {
         connection?.cancel()
         listener.cancel()
@@ -105,7 +174,7 @@ final class PluginConnectionIntegrationTests: XCTestCase {
     func testPresentUpdateDismissRelayToAtollDescriptors() async throws {
         let socketPath = makeSocketPath()
         let server = try FakePluginServer(socketPath: socketPath)
-        let relay = FakeActivityRelay()
+        let relay = FakeRelay()
 
         let plugin = DiscoveredPlugin(
             manifest: PluginManifest(id: "cliamp", name: "cliamp", category: .liveActivity, transport: .unixSocket, socketPath: socketPath),
@@ -145,7 +214,7 @@ final class PluginConnectionIntegrationTests: XCTestCase {
     func testDisconnectDismissesStillActiveActivities() async throws {
         let socketPath = makeSocketPath()
         let server = try FakePluginServer(socketPath: socketPath)
-        let relay = FakeActivityRelay()
+        let relay = FakeRelay()
 
         let plugin = DiscoveredPlugin(
             manifest: PluginManifest(id: "cliamp", name: "cliamp", category: .liveActivity, transport: .unixSocket, socketPath: socketPath),
@@ -173,7 +242,7 @@ final class PluginConnectionIntegrationTests: XCTestCase {
     func testMalformedMessageIsIgnoredWithoutCrashingTheConnection() async throws {
         let socketPath = makeSocketPath()
         let server = try FakePluginServer(socketPath: socketPath)
-        let relay = FakeActivityRelay()
+        let relay = FakeRelay()
 
         let plugin = DiscoveredPlugin(
             manifest: PluginManifest(id: "cliamp", name: "cliamp", category: .liveActivity, transport: .unixSocket, socketPath: socketPath),

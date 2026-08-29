@@ -30,10 +30,54 @@ protocol ActivityRelay: Actor {
     func dismissLiveActivity(activityID: String) async throws
 }
 
+/// A playback command Atoll sends back for a registered media source, in
+/// response to user interaction (notch controls, media keys).
+enum AtollMediaCommand: Equatable {
+    case play
+    case pause
+    case togglePlayPause
+    case nextTrack
+    case previousTrack
+    case seek(to: TimeInterval)
+
+    init?(rpcCommandName: String, seekTo: Double?) {
+        switch rpcCommandName {
+        case "play": self = .play
+        case "pause": self = .pause
+        case "togglePlayPause": self = .togglePlayPause
+        case "nextTrack": self = .nextTrack
+        case "previousTrack": self = .previousTrack
+        case "seek":
+            guard let seekTo else { return nil }
+            self = .seek(to: seekTo)
+        default: return nil
+        }
+    }
+}
+
+/// What a `MediaPluginConnection` needs to relay Now Playing state and
+/// receive playback commands — narrows `AtollRPCClient` down to the three
+/// media-source calls, same testability rationale as `ActivityRelay`.
+protocol MediaRelay: Actor {
+    func registerMediaSource(sourceID: String, name: String, supportsSeek: Bool, supportsSkip: Bool) async throws
+    func unregisterMediaSource(sourceID: String) async throws
+    func publishNowPlayingState(
+        sourceID: String,
+        title: String,
+        artist: String,
+        album: String,
+        artworkBase64: String?,
+        isPlaying: Bool,
+        elapsedTime: TimeInterval,
+        duration: TimeInterval?
+    ) async throws
+    func setOnMediaCommand(_ handler: @escaping @MainActor (String, AtollMediaCommand) -> Void)
+}
+
 /// Owns the WebSocket connection to Atoll: connect/reconnect with backoff,
 /// request/check authorization once, and issue live-activity / lock-screen /
 /// notch RPC calls on behalf of registered plugins.
-actor AtollRPCClient: ActivityRelay {
+actor AtollRPCClient: ActivityRelay, MediaRelay {
     private let bundleIdentifier: String
     private let host: String
     private let port: UInt16
@@ -62,6 +106,15 @@ actor AtollRPCClient: ActivityRelay {
 
     func setOnStateChange(_ handler: @escaping @MainActor (AtollRPCConnectionState) -> Void) {
         onStateChange = handler
+    }
+
+    /// Set once; delivered on the main actor. `sourceID` lets a single
+    /// handler (owned by whatever manages multiple `MediaPluginConnection`s)
+    /// route to the right one.
+    private var onMediaCommand: (@MainActor (String, AtollMediaCommand) -> Void)?
+
+    func setOnMediaCommand(_ handler: @escaping @MainActor (String, AtollMediaCommand) -> Void) {
+        onMediaCommand = handler
     }
 
     init(bundleIdentifier: String, host: String = "127.0.0.1", port: UInt16 = ExtensionRPCConstants.port) {
@@ -164,11 +217,25 @@ actor AtollRPCClient: ActivityRelay {
             }
             return
         }
-        // No "id": a server-initiated notification (e.g. activity dismissed
-        // by the user). Not consumed anywhere yet — logged for visibility.
-        if let notification = try? decoder.decode(RPCNotification.self, from: data) {
-            FileHandle.standardError.write(Data("[AtollRPCClient] notification: \(notification.method)\n".utf8))
+        // No "id": a server-initiated notification.
+        guard let notification = try? decoder.decode(RPCNotification.self, from: data) else { return }
+
+        if notification.method == "atoll.mediaCommand" {
+            handleMediaCommandNotification(notification.params ?? [:])
+            return
         }
+
+        // Other notifications (activity dismissed by the user, etc.) aren't
+        // consumed anywhere yet — logged for visibility.
+        FileHandle.standardError.write(Data("[AtollRPCClient] notification: \(notification.method)\n".utf8))
+    }
+
+    private func handleMediaCommandNotification(_ params: [String: RPCValue]) {
+        guard let sourceID = params["sourceID"]?.stringValue,
+              let commandName = params["command"]?.stringValue,
+              let command = AtollMediaCommand(rpcCommandName: commandName, seekTo: params["seekTo"]?.doubleValue),
+              let handler = onMediaCommand else { return }
+        Task { @MainActor in handler(sourceID, command) }
     }
 
     // MARK: - Authorization
@@ -255,6 +322,46 @@ actor AtollRPCClient: ActivityRelay {
             "experienceID": .string(experienceID),
             "bundleIdentifier": .string(bundleIdentifier)
         ])
+    }
+
+    // MARK: - Media Sources
+
+    func registerMediaSource(sourceID: String, name: String, supportsSeek: Bool, supportsSkip: Bool) async throws {
+        _ = try await call(method: "atoll.registerMediaSource", params: [
+            "sourceID": .string(sourceID),
+            "name": .string(name),
+            "supportsSeek": .bool(supportsSeek),
+            "supportsSkip": .bool(supportsSkip)
+        ])
+    }
+
+    func unregisterMediaSource(sourceID: String) async throws {
+        _ = try await call(method: "atoll.unregisterMediaSource", params: [
+            "sourceID": .string(sourceID)
+        ])
+    }
+
+    func publishNowPlayingState(
+        sourceID: String,
+        title: String,
+        artist: String,
+        album: String,
+        artworkBase64: String?,
+        isPlaying: Bool,
+        elapsedTime: TimeInterval,
+        duration: TimeInterval?
+    ) async throws {
+        var params: [String: RPCValue] = [
+            "sourceID": .string(sourceID),
+            "title": .string(title),
+            "artist": .string(artist),
+            "album": .string(album),
+            "isPlaying": .bool(isPlaying),
+            "elapsedTime": .double(elapsedTime)
+        ]
+        if let artworkBase64 { params["artworkBase64"] = .string(artworkBase64) }
+        if let duration { params["duration"] = .double(duration) }
+        _ = try await call(method: "atoll.publishNowPlayingState", params: params)
     }
 
     // MARK: - RPC Call Plumbing

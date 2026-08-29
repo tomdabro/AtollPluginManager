@@ -35,7 +35,7 @@ final class PluginConnectionManagerTests: XCTestCase {
         writeManifest(id: "cliamp", socketFileName: "cliamp.sock")
 
         let discovery = PluginDiscovery(pluginsDirectory: tempDirectory)
-        let relay = FakeActivityRelay()
+        let relay = FakeRelay()
         let manager = PluginConnectionManager(discovery: discovery, relay: relay, brokerBundleIdentifier: "broker")
 
         manager.start()

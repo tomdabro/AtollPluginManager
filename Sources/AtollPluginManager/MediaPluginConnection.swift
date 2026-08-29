@@ -1,47 +1,42 @@
 //
-//  PluginConnection.swift
+//  MediaPluginConnection.swift
 //  AtollPluginManager
 //
-//  Connects out to one plugin's Unix domain socket (the plugin is the
-//  listener, matching cliamp's existing IPC server design), reads
-//  newline-delimited JSON messages, translates them into Atoll descriptors,
-//  and relays them through an ActivityRelay. Reconnects with backoff since a
-//  passively-discovered plugin may not be running yet.
+//  Connects out to one media plugin's Unix domain socket (mirrors
+//  PluginConnection's shape for live activities), registers it as an Atoll
+//  media source using the manifest's own id/name/config, relays
+//  nowPlaying messages into publishNowPlayingState, and forwards playback
+//  commands Atoll sends back down to the plugin.
 //
 
 import Foundation
 import Network
 
-/// One plugin's live connection: manifest, socket, and the set of activity
-/// ids it currently has presented (so a disconnect can clean them up).
-actor PluginConnection {
+actor MediaPluginConnection {
     private let plugin: DiscoveredPlugin
-    private let brokerBundleIdentifier: String
-    private let relay: any ActivityRelay
+    private let relay: any MediaRelay
     private let onLog: @Sendable (String) -> Void
 
     private var connection: NWConnection?
     private var receiveBuffer = Data()
     private var isRunning = false
     private var reconnectDelay: TimeInterval = 1
-    /// Local (plugin-supplied) activity ids currently presented, so a
-    /// disconnect/failure can dismiss exactly what this plugin owns.
-    private var activeLocalIDs: Set<String> = []
+    /// Whether `registerMediaSource` has succeeded for the current Atoll
+    /// connection lifetime; reset whenever the plugin socket reconnects, same
+    /// "don't assume state survived a gap" reasoning as PluginConnection's
+    /// `presented` flag on the cliamp side.
+    private var isRegistered = false
+
+    private var sourceID: String { plugin.manifest.id }
 
     init(
         plugin: DiscoveredPlugin,
-        brokerBundleIdentifier: String,
-        relay: any ActivityRelay,
+        relay: any MediaRelay,
         onLog: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.plugin = plugin
-        self.brokerBundleIdentifier = brokerBundleIdentifier
         self.relay = relay
         self.onLog = onLog
-    }
-
-    private func qualifiedID(for localID: String) -> String {
-        "\(plugin.manifest.id):\(localID)"
     }
 
     func start() {
@@ -54,34 +49,48 @@ actor PluginConnection {
         isRunning = false
         connection?.cancel()
         connection = nil
-        await dismissAllActiveActivities()
+        if isRegistered {
+            try? await relay.unregisterMediaSource(sourceID: sourceID)
+            isRegistered = false
+        }
     }
+
 
     private func connectLoop() async {
         while isRunning {
             let didConnect = await connectOnce()
             if didConnect {
                 reconnectDelay = 1
+                await registerSource()
                 await receiveLoop()
             }
             connection = nil
-            await dismissAllActiveActivities()
+            isRegistered = false
             guard isRunning else { return }
             try? await Task.sleep(nanoseconds: UInt64(reconnectDelay * 1_000_000_000))
             reconnectDelay = min(reconnectDelay * 2, 30)
         }
     }
 
-    /// Resolves once the connection reaches `.ready` or fails/times out.
+    private func registerSource() async {
+        do {
+            try await relay.registerMediaSource(
+                sourceID: sourceID,
+                name: plugin.manifest.name,
+                supportsSeek: plugin.manifest.supportsSeek,
+                supportsSkip: plugin.manifest.supportsSkip
+            )
+            isRegistered = true
+        } catch {
+            onLog("[\(sourceID)] failed to register media source: \(error.localizedDescription)")
+        }
+    }
+
     private func connectOnce() async -> Bool {
         let endpoint = NWEndpoint.unix(path: plugin.socketURL.path)
         let newConnection = NWConnection(to: endpoint, using: .tcp)
         connection = newConnection
 
-        // `stateUpdateHandler` always fires serially on the `.main` queue
-        // passed to `start(queue:)` below, but the compiler can't see that —
-        // a small `@unchecked Sendable` box keeps the "resume once" guard
-        // without a captured-var warning.
         let guardBox = ResumeGuard()
         return await withCheckedContinuation { continuation in
             newConnection.stateUpdateHandler = { state in
@@ -136,8 +145,6 @@ actor PluginConnection {
         }
     }
 
-    /// Buffers partial reads and splits on newlines — a plugin can write a
-    /// message across several socket writes.
     private func handleIncoming(_ chunk: Data) async {
         receiveBuffer.append(chunk)
         while let newlineIndex = receiveBuffer.firstIndex(of: 0x0A) {
@@ -149,46 +156,36 @@ actor PluginConnection {
     }
 
     private func handleLine(_ lineData: Data) async {
-        let message: PluginMessage
-        do {
-            message = try JSONDecoder().decode(PluginMessage.self, from: lineData)
-        } catch {
-            onLog("[\(plugin.manifest.id)] malformed message: \(error.localizedDescription)")
+        guard let message = try? JSONDecoder().decode(MediaNowPlayingMessage.self, from: lineData) else {
+            onLog("[\(sourceID)] malformed nowPlaying message: \(String(data: lineData, encoding: .utf8) ?? "<binary>")")
+            return
+        }
+        guard !message.title.isEmpty else {
+            onLog("[\(sourceID)] \(MediaPluginMessageError.missingTitle.localizedDescription)")
             return
         }
 
         do {
-            switch message.type {
-            case .presentActivity:
-                let descriptor = try message.makeDescriptor(
-                    qualifiedID: qualifiedID(for: message.id),
-                    brokerBundleIdentifier: brokerBundleIdentifier
-                )
-                try await relay.presentLiveActivity(descriptor)
-                activeLocalIDs.insert(message.id)
-                await send(.ack(id: message.id))
-
-            case .updateActivity:
-                let descriptor = try message.makeDescriptor(
-                    qualifiedID: qualifiedID(for: message.id),
-                    brokerBundleIdentifier: brokerBundleIdentifier
-                )
-                try await relay.updateLiveActivity(descriptor)
-                await send(.ack(id: message.id))
-
-            case .dismissActivity:
-                try await relay.dismissLiveActivity(activityID: qualifiedID(for: message.id))
-                activeLocalIDs.remove(message.id)
-                await send(.ack(id: message.id))
-            }
+            try await relay.publishNowPlayingState(
+                sourceID: sourceID,
+                title: message.title,
+                artist: message.artist ?? "",
+                album: message.album ?? "",
+                artworkBase64: message.artworkBase64,
+                isPlaying: message.isPlaying,
+                elapsedTime: message.elapsedTime,
+                duration: message.duration
+            )
         } catch {
-            onLog("[\(plugin.manifest.id)] failed to relay \(message.type.rawValue) for \(message.id): \(error.localizedDescription)")
-            await send(.error(id: message.id, message: error.localizedDescription))
+            onLog("[\(sourceID)] failed to publish Now Playing state: \(error.localizedDescription)")
         }
     }
 
-    private func send(_ response: PluginResponse) async {
-        guard let connection, let data = try? JSONEncoder().encode(response) else { return }
+    /// Called by whatever dispatches `AtollRPCClient.onMediaCommand` by
+    /// sourceID (see `PluginConnectionManager`).
+    func handleCommand(_ command: AtollMediaCommand) async {
+        guard let connection else { return }
+        guard let data = try? JSONEncoder().encode(MediaCommandMessage(command: command)) else { return }
         var framed = data
         framed.append(0x0A)
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -197,19 +194,4 @@ actor PluginConnection {
             })
         }
     }
-
-    private func dismissAllActiveActivities() async {
-        guard !activeLocalIDs.isEmpty else { return }
-        let idsToClear = activeLocalIDs
-        activeLocalIDs.removeAll()
-        for localID in idsToClear {
-            try? await relay.dismissLiveActivity(activityID: qualifiedID(for: localID))
-        }
-    }
-}
-
-/// Single-writer "resume once" flag for `NWConnection.stateUpdateHandler`,
-/// which only ever fires on the queue passed to `start(queue:)`.
-final class ResumeGuard: @unchecked Sendable {
-    var resumed = false
 }

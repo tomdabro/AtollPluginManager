@@ -9,11 +9,12 @@
 
 import Foundation
 
-/// What kind of Atoll surface a plugin presents. Only `.liveActivity` is
-/// implemented (Phase 3); lock screen widgets and notch experiences are
-/// later phases and are intentionally not accepted yet.
+/// What kind of Atoll surface a plugin presents.
 enum PluginCategory: String, Codable {
     case liveActivity
+    /// A Now Playing / media source (registered over
+    /// `atoll.registerMediaSource`, see `MediaPluginConnection`).
+    case media
 }
 
 /// How the broker reaches the plugin. Only Unix domain sockets are
@@ -35,18 +36,35 @@ struct PluginManifest: Codable, Equatable {
     /// (PluginProtocolVersion.current) the plugin speaks. Defaults to 1 if
     /// omitted, since that was the only version before this field existed.
     let protocolVersion: Int
+    /// `category == .media` config: whether the source can seek to an
+    /// arbitrary position. Ignored for other categories. Defaults to true.
+    let supportsSeek: Bool
+    /// `category == .media` config: whether next/previous track navigation
+    /// is available. Ignored for other categories. Defaults to true.
+    let supportsSkip: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, category, transport, socketPath, protocolVersion
+        case id, name, category, transport, socketPath, protocolVersion, supportsSeek, supportsSkip
     }
 
-    init(id: String, name: String, category: PluginCategory, transport: PluginTransport, socketPath: String, protocolVersion: Int = PluginProtocolVersion.current) {
+    init(
+        id: String,
+        name: String,
+        category: PluginCategory,
+        transport: PluginTransport,
+        socketPath: String,
+        protocolVersion: Int = PluginProtocolVersion.current,
+        supportsSeek: Bool = true,
+        supportsSkip: Bool = true
+    ) {
         self.id = id
         self.name = name
         self.category = category
         self.transport = transport
         self.socketPath = socketPath
         self.protocolVersion = protocolVersion
+        self.supportsSeek = supportsSeek
+        self.supportsSkip = supportsSkip
     }
 
     init(from decoder: Decoder) throws {
@@ -57,6 +75,8 @@ struct PluginManifest: Codable, Equatable {
         transport = try container.decode(PluginTransport.self, forKey: .transport)
         socketPath = try container.decode(String.self, forKey: .socketPath)
         protocolVersion = try container.decodeIfPresent(Int.self, forKey: .protocolVersion) ?? 1
+        supportsSeek = try container.decodeIfPresent(Bool.self, forKey: .supportsSeek) ?? true
+        supportsSkip = try container.decodeIfPresent(Bool.self, forKey: .supportsSkip) ?? true
     }
 
     /// Structural validation beyond what decoding already guarantees (decoding

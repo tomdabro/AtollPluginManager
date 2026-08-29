@@ -114,6 +114,16 @@ enum RPCValue: Codable {
         return nil
     }
 
+    /// A JSON number without a decimal point decodes to `.int`, not
+    /// `.double` — this normalizes either to a `Double`.
+    var doubleValue: Double? {
+        switch self {
+        case .double(let d): return d
+        case .int(let i): return Double(i)
+        default: return nil
+        }
+    }
+
     /// Wrap any `Encodable` value (e.g. an `AtollExtensionKit` descriptor) as
     /// an `RPCValue` by round-tripping it through JSON.
     static func encoding<T: Encodable>(_ value: T, using encoder: JSONEncoder = JSONEncoder()) throws -> RPCValue {
