@@ -288,5 +288,5 @@ struct ContentView: View {
         .environmentObject(statusModel)
         .environmentObject(discovery)
         .environmentObject(PluginConnectionManager(discovery: discovery, relay: client, connectionStatus: statusModel, brokerBundleIdentifier: "preview"))
-        .environmentObject(GoogleCalendarViewState(connection: GoogleCalendarConnection(relay: client)))
+        .environmentObject(GoogleCalendarViewState(connection: GoogleCalendarConnection(relay: client), connectionStatus: statusModel))
 }

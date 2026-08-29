@@ -172,6 +172,21 @@ actor GoogleCalendarConnection {
         notifyStateChange()
     }
 
+    /// A still-authenticated connection never gets a reason to re-register
+    /// just because Atoll itself restarted -- polling keeps running against
+    /// the same broker-side `isRegistered = true` flag, but the fresh Atoll
+    /// instance has forgotten the source entirely, so the next publish would
+    /// fail with "sourceID not owned by this connection" (same class of bug
+    /// already fixed for media sources via
+    /// `MediaPluginConnection.resyncRegistration()`). Resetting the flag and
+    /// running a poll immediately re-registers and republishes in one step,
+    /// rather than waiting up to `pollInterval` for the next scheduled poll.
+    func resyncRegistration() async {
+        guard isAuthenticated, isEnabled else { return }
+        isRegistered = false
+        await pollOnce()
+    }
+
     // MARK: - Polling
 
     private func startPolling() {
@@ -207,9 +222,11 @@ actor GoogleCalendarConnection {
         let start = now.addingTimeInterval(-Self.lookBehind)
         let end = now.addingTimeInterval(Self.lookAhead)
         let events = await api.events(from: start, to: end, calendarIDs: calendars.map { $0.id })
+        onLog("[google-calendar] fetched \(calendars.count) calendars, \(events.count) events")
 
         do {
             try await relay.publishCalendarState(sourceID: Self.sourceID, calendars: calendars, events: events)
+            onLog("[google-calendar] published state to Atoll successfully")
         } catch {
             onLog("[google-calendar] failed to publish calendar state: \(error.localizedDescription)")
         }
