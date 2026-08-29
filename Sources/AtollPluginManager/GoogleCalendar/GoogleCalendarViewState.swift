@@ -13,6 +13,7 @@ final class GoogleCalendarViewState: ObservableObject {
     @Published private(set) var isAuthenticated = false
     @Published private(set) var isAuthorizing = false
     @Published private(set) var error: GoogleCalendarError?
+    @Published private(set) var isEnabled = true
 
     let connection: GoogleCalendarConnection
 
@@ -36,6 +37,10 @@ final class GoogleCalendarViewState: ObservableObject {
         Task { await connection.disconnect() }
     }
 
+    func setEnabled(_ enabled: Bool) {
+        Task { await connection.setEnabled(enabled) }
+    }
+
     /// The Client Secret field's binding -- backed by the connection's own
     /// Keychain-persisted value, read/written synchronously via a cached
     /// copy since SwiftUI text fields need a plain String binding, not an
@@ -52,5 +57,6 @@ final class GoogleCalendarViewState: ObservableObject {
         isAuthenticated = await connection.isAuthenticated
         isAuthorizing = await connection.isAuthorizing
         error = await connection.error
+        isEnabled = await connection.isEnabled
     }
 }

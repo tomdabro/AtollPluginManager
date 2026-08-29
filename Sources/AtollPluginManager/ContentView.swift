@@ -71,6 +71,7 @@ struct ContentView: View {
     private var googleCalendarStatusColor: Color {
         if googleCalendar.isAuthorizing { return .yellow }
         if googleCalendar.error != nil { return .red }
+        if googleCalendar.isAuthenticated && !googleCalendar.isEnabled { return .gray }
         if googleCalendar.isAuthenticated { return .green }
         return .gray
     }
@@ -135,42 +136,49 @@ struct ContentView: View {
     /// A built-in, broker-native plugin (no external process to discover —
     /// this app does the Google OAuth + polling itself), shown the same way
     /// a discovered plugin like cliamp is: status dot, icon, name, id,
-    /// category badge. Tapping the row expands its own Client ID/Secret
-    /// config in place of the discovered plugins' enable/disable toggle,
-    /// since "enabled" here means "connected", not a simple on/off.
+    /// category badge, and an enable/disable toggle (pauses polling and
+    /// unregisters from Atoll without clearing the OAuth token pair, so
+    /// turning it back on resumes immediately). A trailing chevron button
+    /// (there's no manifest folder to expand into, so no natural
+    /// disclosure control to reuse) expands the Client ID/Secret config.
     @ViewBuilder
     private var googleCalendarRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button {
-                showingGoogleCalendarConfig.toggle()
-            } label: {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(googleCalendarStatusColor)
-                        .frame(width: 8, height: 8)
-                    Image(systemName: "calendar")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Google Calendar")
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                    Text("google-calendar")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Calendar Source")
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.secondary.opacity(0.15))
-                        .cornerRadius(4)
-                    Spacer()
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(googleCalendarStatusColor)
+                    .frame(width: 8, height: 8)
+                Image(systemName: "calendar")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Google Calendar")
+                    .font(.body)
+                Text("google-calendar")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Calendar Source")
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.15))
+                    .cornerRadius(4)
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { googleCalendar.isEnabled },
+                    set: { googleCalendar.setEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
+                Button {
+                    showingGoogleCalendarConfig.toggle()
+                } label: {
                     Image(systemName: showingGoogleCalendarConfig ? "chevron.up" : "chevron.down")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             if showingGoogleCalendarConfig {
                 googleCalendarConfig
@@ -232,6 +240,9 @@ struct ContentView: View {
     }
 
     private var googleCalendarStatusText: String {
+        if googleCalendar.isAuthenticated && !googleCalendar.isEnabled {
+            return "Paused — turn the switch back on to resume."
+        }
         if googleCalendar.isAuthenticated {
             return "Connected — pushing events to Atoll."
         }

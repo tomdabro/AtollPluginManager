@@ -40,7 +40,7 @@ actor GoogleCalendarConnection {
     private(set) var isAuthenticated = false
     private(set) var isAuthorizing = false
     private(set) var error: GoogleCalendarError?
-
+    private(set) var isEnabled = true
     private var onStateChange: (@MainActor () -> Void)?
 
     init(
@@ -67,11 +67,13 @@ actor GoogleCalendarConnection {
         Task { @MainActor in onStateChange() }
     }
 
-    /// Resumes polling on launch if a token pair is already stored, without
-    /// requiring the user to click Connect again every relaunch.
+    /// Resumes polling on launch if a token pair is already stored and the
+    /// integration hasn't been paused, without requiring the user to click
+    /// Connect again every relaunch.
     func start() async {
         refreshAuthenticationState()
-        if isAuthenticated {
+        isEnabled = GoogleCalendarPreferences.isEnabled()
+        if isAuthenticated && isEnabled {
             startPolling()
         }
     }
@@ -123,7 +125,29 @@ actor GoogleCalendarConnection {
         isAuthorizing = false
         refreshAuthenticationState()
         if isAuthenticated {
+            isEnabled = true
+            GoogleCalendarPreferences.setEnabled(true)
             startPolling()
+        }
+        notifyStateChange()
+    }
+
+    /// Pauses or resumes without touching the OAuth token pair: turning it
+    /// back on resumes immediately, no reconnect needed. Distinct from
+    /// disconnect(), which clears tokens and requires a fresh sign-in.
+    func setEnabled(_ enabled: Bool) async {
+        isEnabled = enabled
+        GoogleCalendarPreferences.setEnabled(enabled)
+        if enabled {
+            if isAuthenticated {
+                startPolling()
+            }
+        } else {
+            stopPolling()
+            if isRegistered {
+                try? await relay.unregisterCalendarSource(sourceID: Self.sourceID)
+                isRegistered = false
+            }
         }
         notifyStateChange()
     }
@@ -136,6 +160,8 @@ actor GoogleCalendarConnection {
         }
         await oauth.clearTokens()
         error = nil
+        isEnabled = true
+        GoogleCalendarPreferences.setEnabled(true)
         refreshAuthenticationState()
         notifyStateChange()
     }
