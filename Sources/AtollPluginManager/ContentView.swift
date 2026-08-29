@@ -14,6 +14,7 @@ struct ContentView: View {
     @EnvironmentObject private var connectionManager: PluginConnectionManager
     @EnvironmentObject private var googleCalendar: GoogleCalendarViewState
     @AppStorage("googleCalendarClientID") private var googleCalendarClientID: String = ""
+    @State private var showingGoogleCalendarConfig = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -38,10 +39,6 @@ struct ContentView: View {
             Divider()
 
             pluginsSection
-
-            Divider()
-
-            googleCalendarSection
         }
         .padding(24)
         .frame(width: 420)
@@ -66,14 +63,28 @@ struct ContentView: View {
         }
     }
 
+    /// Same green/red/grey semantics as a discovered plugin's row: green
+    /// while actually live and pushing data, red on any error (revoked
+    /// token, failed exchange, ...), grey when there's simply nothing
+    /// connected yet. Yellow only while the OAuth round-trip is in flight,
+    /// matching the broker's own top-level connecting state.
+    private var googleCalendarStatusColor: Color {
+        if googleCalendar.isAuthorizing { return .yellow }
+        if googleCalendar.error != nil { return .red }
+        if googleCalendar.isAuthenticated { return .green }
+        return .gray
+    }
+
     @ViewBuilder
     private var pluginsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Plugins")
                 .font(.headline)
 
+            googleCalendarRow
+
             if discovery.plugins.isEmpty && discovery.rejectedManifests.isEmpty {
-                Text("None found in \(PluginDiscovery.defaultPluginsDirectory.path)")
+                Text("No external plugins found in \(PluginDiscovery.defaultPluginsDirectory.path)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -121,12 +132,56 @@ struct ContentView: View {
         }
     }
 
+    /// A built-in, broker-native plugin (no external process to discover —
+    /// this app does the Google OAuth + polling itself), shown the same way
+    /// a discovered plugin like cliamp is: status dot, icon, name, id,
+    /// category badge. Tapping the row expands its own Client ID/Secret
+    /// config in place of the discovered plugins' enable/disable toggle,
+    /// since "enabled" here means "connected", not a simple on/off.
     @ViewBuilder
-    private var googleCalendarSection: some View {
+    private var googleCalendarRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Google Calendar")
-                .font(.headline)
+            Button {
+                showingGoogleCalendarConfig.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(googleCalendarStatusColor)
+                        .frame(width: 8, height: 8)
+                    Image(systemName: "calendar")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Google Calendar")
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                    Text("google-calendar")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Calendar Source")
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.15))
+                        .cornerRadius(4)
+                    Spacer()
+                    Image(systemName: showingGoogleCalendarConfig ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
+            if showingGoogleCalendarConfig {
+                googleCalendarConfig
+                    .padding(.leading, 14)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var googleCalendarConfig: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Connects directly to your Google account via OAuth and pushes calendar events to Atoll as a calendar source. Create a free OAuth client at console.cloud.google.com (APIs & Services → Credentials → Create Credentials → OAuth client ID → Desktop app), enable the Calendar API for that project, then paste its Client ID and Client Secret here.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -140,14 +195,9 @@ struct ContentView: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.caption.monospaced())
 
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(googleCalendar.isAuthenticated ? Color.green : Color.secondary)
-                    .frame(width: 8, height: 8)
-                Text(googleCalendarStatusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text(googleCalendarStatusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if let error = googleCalendar.error {
                 Text(message(for: error))
@@ -184,6 +234,9 @@ struct ContentView: View {
     private var googleCalendarStatusText: String {
         if googleCalendar.isAuthenticated {
             return "Connected — pushing events to Atoll."
+        }
+        if googleCalendar.isAuthorizing {
+            return "Connecting…"
         }
         if googleCalendarClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || googleCalendar.clientSecretField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
