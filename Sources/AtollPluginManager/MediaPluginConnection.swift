@@ -94,12 +94,28 @@ actor MediaPluginConnection {
         let guardBox = ResumeGuard()
         return await withCheckedContinuation { continuation in
             newConnection.stateUpdateHandler = { state in
-                guard !guardBox.resumed else { return }
                 switch state {
                 case .ready:
+                    guard !guardBox.resumed else { return }
                     guardBox.resumed = true
                     continuation.resume(returning: true)
                 case .failed, .cancelled:
+                    guard !guardBox.resumed else {
+                        // The connection was already up and just died under
+                        // us (e.g. the plugin process restarted). A pending
+                        // `NWConnection.receive()` issued before this state
+                        // change can otherwise never complete -- Network.framework
+                        // doesn't reliably re-deliver a failure to a receive
+                        // call already in flight when the connection fails
+                        // out from under it -- which would leave receiveLoop
+                        // (and therefore connectLoop's reconnect) stuck
+                        // forever, only recoverable by the user manually
+                        // disabling/re-enabling the plugin. Cancelling here
+                        // forces any pending receive to complete so the loop
+                        // notices and reconnects on its own.
+                        newConnection.cancel()
+                        return
+                    }
                     guardBox.resumed = true
                     continuation.resume(returning: false)
                 default:
