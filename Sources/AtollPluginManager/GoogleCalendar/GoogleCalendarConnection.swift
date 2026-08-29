@@ -97,6 +97,7 @@ actor GoogleCalendarConnection {
         notifyStateChange()
         let clientID = GoogleCalendarPreferences.clientID().trimmingCharacters(in: .whitespacesAndNewlines)
         let secret = getClientSecret().trimmingCharacters(in: .whitespacesAndNewlines)
+        onLog("connect() clientID.isEmpty=\(clientID.isEmpty) secret.isEmpty=\(secret.isEmpty)")
         guard !clientID.isEmpty else {
             error = .missingClientID
             notifyStateChange()
@@ -112,13 +113,18 @@ actor GoogleCalendarConnection {
         notifyStateChange()
 
         do {
+            onLog("calling oauth.authorize()")
             try await oauth.authorize(clientID: clientID, clientSecret: secret)
+            onLog("oauth.authorize() succeeded")
             error = nil
         } catch GoogleCalendarError.canceled {
+            onLog("oauth.authorize() canceled/timed out")
             // The user closed the browser tab, or never got to it; not an error.
         } catch let calendarError as GoogleCalendarError {
+            onLog("oauth.authorize() failed: \(calendarError)")
             error = calendarError
         } catch {
+            onLog("oauth.authorize() failed with unexpected error: \(error)")
             self.error = .loopbackServerFailed(String(describing: error))
         }
 

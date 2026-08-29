@@ -27,6 +27,16 @@ final class GoogleCalendarLoopbackServer {
     private let queue = DispatchQueue(label: "com.atollpluginmanager.GoogleCalendarLoopback")
     private var listener: NWListener?
 
+    /// A connection that has arrived and finished its TCP handshake but
+    /// hasn't been claimed by `waitForCallback` yet -- rare (would require
+    /// the browser to redirect before the caller even reaches the next
+    /// line after `start()`), but handled structurally rather than assumed
+    /// away, since `newConnectionHandler` must be registered before
+    /// `start()` is called (see below), which is earlier than callers
+    /// naturally start waiting.
+    private var pendingConnection: NWConnection?
+    private var callbackFinish: ((Result<[URLQueryItem], Error>) -> Void)?
+
     /// Binds an ephemeral port on 127.0.0.1 and returns it once ready.
     func start() async throws -> UInt16 {
         let params = NWParameters.tcp
@@ -40,6 +50,17 @@ final class GoogleCalendarLoopbackServer {
             throw ServerError.bindFailed(error.localizedDescription)
         }
         self.listener = listener
+
+        // Network.framework requires a connection handler to be set before
+        // `start()` is called -- starting without one fails immediately with
+        // EINVAL ("Started without setting either new connection handler or
+        // new connection group handler", confirmed via `log show`). The
+        // actual redirect can't be claimed until `waitForCallback` supplies
+        // its completion, so an early arrival is parked in
+        // `pendingConnection` and handed off once that completion exists.
+        listener.newConnectionHandler = { [weak self] connection in
+            self?.queue.async { self?.handleNewConnection(connection) }
+        }
 
         return try await withCheckedThrowingContinuation { continuation in
             var resumed = false
@@ -71,9 +92,7 @@ final class GoogleCalendarLoopbackServer {
     /// Times out so an abandoned or never-opened browser tab cannot hang the
     /// caller forever; a timeout is treated as a user cancellation.
     func waitForCallback(timeout: TimeInterval) async throws -> [URLQueryItem] {
-        guard let listener else { throw ServerError.bindFailed("Server not started.") }
-
-        return try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { continuation in
             var resumed = false
             func finish(_ result: Result<[URLQueryItem], Error>) {
                 guard !resumed else { return }
@@ -84,20 +103,40 @@ final class GoogleCalendarLoopbackServer {
                 }
             }
 
-            listener.newConnectionHandler = { [weak self] connection in
-                guard let self else { return }
-                connection.stateUpdateHandler = { state in
-                    if case .ready = state {
-                        self.receiveRequest(on: connection, finish: finish)
-                    }
-                }
-                connection.start(queue: self.queue)
+            queue.async { [weak self] in
+                self?.callbackFinish = finish
+                self?.tryDeliverPendingConnection()
             }
-
-            self.queue.asyncAfter(deadline: .now() + timeout) {
+            queue.asyncAfter(deadline: .now() + timeout) {
                 finish(.failure(ServerError.timedOut))
             }
         }
+    }
+
+    private func handleNewConnection(_ connection: NWConnection) {
+        guard pendingConnection == nil else {
+            // Already have one in flight; a browser prefetch/favicon probe
+            // or similar stray connection is simply dropped.
+            connection.cancel()
+            return
+        }
+        pendingConnection = connection
+        connection.stateUpdateHandler = { [weak self] state in
+            if case .ready = state {
+                self?.queue.async { self?.tryDeliverPendingConnection() }
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    /// Fires once both halves exist: a connection that finished its
+    /// handshake, and a `waitForCallback` completion to deliver the result
+    /// to. Either can arrive first; this is the single funnel for both orderings.
+    private func tryDeliverPendingConnection() {
+        guard let connection = pendingConnection, let finish = callbackFinish else { return }
+        pendingConnection = nil
+        callbackFinish = nil
+        receiveRequest(on: connection, finish: finish)
     }
 
     private func receiveRequest(
@@ -150,5 +189,8 @@ final class GoogleCalendarLoopbackServer {
     func stop() {
         listener?.cancel()
         listener = nil
+        pendingConnection?.cancel()
+        pendingConnection = nil
+        callbackFinish = nil
     }
 }

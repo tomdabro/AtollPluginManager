@@ -33,7 +33,9 @@ struct AtollPluginManagerApp: App {
             brokerBundleIdentifier: AtollPluginManagerApp.bundleIdentifier
         ))
         _googleCalendar = StateObject(wrappedValue: GoogleCalendarViewState(
-            connection: GoogleCalendarConnection(relay: client)
+            connection: GoogleCalendarConnection(relay: client, onLog: { message in
+                FileHandle.standardError.write(Data("[GoogleCalendar] \(message)\n".utf8))
+            })
         ))
     }
 
