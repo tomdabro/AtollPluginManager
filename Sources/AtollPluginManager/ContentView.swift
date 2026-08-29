@@ -82,6 +82,14 @@ struct ContentView: View {
                     Text(plugin.manifest.id)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Spacer()
+                    Toggle("", isOn: Binding(
+                        get: { connectionManager.isEnabled(plugin.manifest.id) },
+                        set: { connectionManager.setEnabled($0, for: plugin.manifest.id) }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .controlSize(.small)
                 }
             }
 

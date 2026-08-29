@@ -3,8 +3,9 @@
 //  AtollPluginManager
 //
 //  Bridges PluginDiscovery (what plugins exist) to PluginConnection (talking
-//  to each one): starts a connection for every newly-discovered manifest,
-//  stops it when the manifest disappears or changes.
+//  to each one): starts a connection for every newly-discovered, enabled
+//  manifest, stops it when the manifest disappears, changes, or the user
+//  disables it in Settings.
 //
 
 import Foundation
@@ -12,13 +13,18 @@ import Combine
 
 @MainActor
 final class PluginConnectionManager: ObservableObject {
+    /// Plugins with an active (or connecting) `PluginConnection` — i.e.
+    /// discovered and enabled, regardless of whether the socket is actually
+    /// up yet.
     @Published private(set) var connectedPluginIDs: Set<String> = []
+    @Published private(set) var disabledPluginIDs: Set<String> = PluginPreferences.disabledPluginIDs()
 
     private let discovery: PluginDiscovery
     private let relay: any ActivityRelay
     private let brokerBundleIdentifier: String
     private var connections: [String: PluginConnection] = [:]
     private var cancellable: AnyCancellable?
+    private var latestPlugins: [String: DiscoveredPlugin] = [:]
 
     init(discovery: PluginDiscovery, relay: any ActivityRelay, brokerBundleIdentifier: String) {
         self.discovery = discovery
@@ -30,29 +36,41 @@ final class PluginConnectionManager: ObservableObject {
         cancellable = discovery.$plugins
             .receive(on: DispatchQueue.main)
             .sink { [weak self] plugins in
-                self?.reconcile(with: plugins)
+                self?.latestPlugins = plugins
+                self?.reconcile()
             }
     }
 
-    /// Starts a `PluginConnection` for each manifest not already connected,
-    /// and stops any whose manifest disappeared or changed (e.g. socket path
-    /// edited) — reconnecting on the new definition rather than the stale one.
-    private func reconcile(with plugins: [String: DiscoveredPlugin]) {
-        let currentIDs = Set(plugins.keys)
+    func isEnabled(_ pluginID: String) -> Bool {
+        !disabledPluginIDs.contains(pluginID)
+    }
+
+    func setEnabled(_ enabled: Bool, for pluginID: String) {
+        PluginPreferences.setEnabled(enabled, for: pluginID)
+        disabledPluginIDs = PluginPreferences.disabledPluginIDs()
+        reconcile()
+    }
+
+    /// Starts a `PluginConnection` for each discovered, enabled manifest not
+    /// already connected, and stops any whose manifest disappeared, changed,
+    /// or was just disabled — reconnecting on the new definition rather than
+    /// the stale one.
+    private func reconcile() {
+        let enabledIDs = Set(latestPlugins.keys).subtracting(disabledPluginIDs)
         let knownIDs = Set(connections.keys)
 
-        for removedID in knownIDs.subtracting(currentIDs) {
+        for removedID in knownIDs.subtracting(enabledIDs) {
             stopConnection(for: removedID)
         }
 
-        for id in currentIDs {
-            guard let plugin = plugins[id] else { continue }
+        for id in enabledIDs {
+            guard let plugin = latestPlugins[id] else { continue }
             if connections[id] == nil {
                 startConnection(for: plugin)
             }
         }
 
-        connectedPluginIDs = currentIDs
+        connectedPluginIDs = enabledIDs
     }
 
     private func startConnection(for plugin: DiscoveredPlugin) {
