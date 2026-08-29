@@ -14,8 +14,11 @@ import Combine
 
 @MainActor
 final class PluginConnectionManager: ObservableObject {
-    /// Plugins with an active (or connecting) connection — i.e. discovered
-    /// and enabled, regardless of whether the socket is actually up yet.
+    /// Plugins whose underlying socket connection to the actual plugin
+    /// process is live right now -- not merely discovered and enabled.
+    /// Driven by each connection's `setOnLiveStateChange` callback, not by
+    /// `reconcile()`: a manifest being discovered says nothing about
+    /// whether the plugin process behind it is actually reachable yet.
     @Published private(set) var connectedPluginIDs: Set<String> = []
     @Published private(set) var disabledPluginIDs: Set<String> = PluginPreferences.disabledPluginIDs()
 
@@ -103,13 +106,19 @@ final class PluginConnectionManager: ObservableObject {
             guard activityConnections[id] == nil, mediaConnections[id] == nil else { continue }
             startConnection(for: plugin)
         }
-
-        connectedPluginIDs = enabledIDs
     }
 
     private func startConnection(for plugin: DiscoveredPlugin) {
         let onLog: @Sendable (String) -> Void = { message in
             FileHandle.standardError.write(Data((message + "\n").utf8))
+        }
+        let pluginID = plugin.manifest.id
+        let onLiveStateChange: @MainActor (Bool) -> Void = { [weak self] isLive in
+            if isLive {
+                self?.connectedPluginIDs.insert(pluginID)
+            } else {
+                self?.connectedPluginIDs.remove(pluginID)
+            }
         }
 
         switch plugin.manifest.category {
@@ -121,16 +130,23 @@ final class PluginConnectionManager: ObservableObject {
                 onLog: onLog
             )
             activityConnections[plugin.manifest.id] = connection
-            Task { await connection.start() }
+            Task {
+                await connection.setOnLiveStateChange(onLiveStateChange)
+                await connection.start()
+            }
 
         case .media:
             let connection = MediaPluginConnection(plugin: plugin, relay: relay, onLog: onLog)
             mediaConnections[plugin.manifest.id] = connection
-            Task { await connection.start() }
+            Task {
+                await connection.setOnLiveStateChange(onLiveStateChange)
+                await connection.start()
+            }
         }
     }
 
     private func stopConnection(for id: String) {
+        connectedPluginIDs.remove(id)
         if let connection = activityConnections.removeValue(forKey: id) {
             Task { await connection.stop() }
         }

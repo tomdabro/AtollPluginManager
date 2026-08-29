@@ -21,11 +21,22 @@ actor MediaPluginConnection {
     private var receiveBuffer = Data()
     private var isRunning = false
     private var reconnectDelay: TimeInterval = 1
+    /// Local Unix socket to an already-running (or about-to-run) process on
+    /// the same machine -- capped low so a plugin started shortly after the
+    /// broker (a common real ordering: launch Atoll, then the broker, then
+    /// the plugin) is picked up within a few seconds rather than however far
+    /// backoff had already climbed.
+    private let maxReconnectDelay: TimeInterval = 5
     /// Whether `registerMediaSource` has succeeded for the current Atoll
     /// connection lifetime; reset whenever the plugin socket reconnects, same
     /// "don't assume state survived a gap" reasoning as PluginConnection's
     /// `presented` flag on the cliamp side.
     private var isRegistered = false
+    /// Reported to `PluginConnectionManager` via `setOnLiveStateChange` so
+    /// the UI's connected indicator reflects whether the socket is actually
+    /// up and registered right now, not just "discovered and enabled."
+    private var onLiveStateChange: (@MainActor (Bool) -> Void)?
+    private var isLive = false
 
     private var sourceID: String { plugin.manifest.id }
 
@@ -37,6 +48,19 @@ actor MediaPluginConnection {
         self.plugin = plugin
         self.relay = relay
         self.onLog = onLog
+    }
+
+    /// `PluginConnectionManager` wires this up before calling `start()`, so
+    /// no transition is ever missed.
+    func setOnLiveStateChange(_ handler: @escaping @MainActor (Bool) -> Void) {
+        onLiveStateChange = handler
+    }
+
+    private func notifyLiveState(_ live: Bool) {
+        guard isLive != live else { return }
+        isLive = live
+        guard let onLiveStateChange else { return }
+        Task { @MainActor in onLiveStateChange(live) }
     }
 
     func start() {
@@ -52,6 +76,7 @@ actor MediaPluginConnection {
         if isRegistered {
             try? await relay.unregisterMediaSource(sourceID: sourceID)
             isRegistered = false
+            notifyLiveState(false)
         }
     }
 
@@ -65,10 +90,13 @@ actor MediaPluginConnection {
                 await receiveLoop()
             }
             connection = nil
-            isRegistered = false
+            if isRegistered {
+                isRegistered = false
+                notifyLiveState(false)
+            }
             guard isRunning else { return }
             try? await Task.sleep(nanoseconds: UInt64(reconnectDelay * 1_000_000_000))
-            reconnectDelay = min(reconnectDelay * 2, 30)
+            reconnectDelay = min(reconnectDelay * 2, maxReconnectDelay)
         }
     }
 
@@ -81,10 +109,25 @@ actor MediaPluginConnection {
                 supportsSkip: plugin.manifest.supportsSkip
             )
             isRegistered = true
+            notifyLiveState(true)
         } catch {
             onLog("[\(sourceID)] failed to register media source: \(error.localizedDescription)")
         }
     }
+
+    /// A Unix domain socket connect attempt against a path that doesn't
+    /// exist yet -- the broker starting before the plugin, or the brief gap
+    /// while a restarting plugin recreates its socket -- lands in
+    /// `.waiting(POSIXErrorCode.ENOENT)` and, unlike a refused TCP
+    /// connection, never progresses to `.ready` *or* `.failed` on its own:
+    /// Network.framework treats a missing local path as a condition that
+    /// might resolve later, not a terminal failure (confirmed directly:
+    /// still `.waiting` after 5s with nothing else listening). Left alone
+    /// this hangs `connectOnce()` -- and therefore `connectLoop`'s entire
+    /// retry loop -- forever, which is exactly what "the broker never
+    /// picked up the plugin" cold-start reports turned out to be: no amount
+    /// of waiting recovers a loop that's stuck on its first attempt.
+    private static let initialConnectTimeout: TimeInterval = 2
 
     private func connectOnce() async -> Bool {
         let endpoint = NWEndpoint.unix(path: plugin.socketURL.path)
@@ -123,6 +166,15 @@ actor MediaPluginConnection {
                 }
             }
             newConnection.start(queue: .main)
+
+            // Runs on the same serial `.main` queue as stateUpdateHandler
+            // above, so there's no race between this and a `.ready`/`.failed`
+            // delivery landing at the same time -- whichever was scheduled
+            // first on that queue runs first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.initialConnectTimeout) {
+                guard !guardBox.resumed else { return }
+                newConnection.cancel()
+            }
         }
     }
 

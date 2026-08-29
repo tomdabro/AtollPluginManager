@@ -24,9 +24,19 @@ actor PluginConnection {
     private var receiveBuffer = Data()
     private var isRunning = false
     private var reconnectDelay: TimeInterval = 1
+    /// Local Unix socket to an already-running (or about-to-run) process on
+    /// the same machine -- capped low so a plugin started shortly after the
+    /// broker is picked up within a few seconds rather than however far
+    /// backoff had already climbed.
+    private let maxReconnectDelay: TimeInterval = 5
     /// Local (plugin-supplied) activity ids currently presented, so a
     /// disconnect/failure can dismiss exactly what this plugin owns.
     private var activeLocalIDs: Set<String> = []
+    /// Reported to `PluginConnectionManager` via `setOnLiveStateChange` so
+    /// the UI's connected indicator reflects whether the socket is actually
+    /// up right now, not just "discovered and enabled."
+    private var onLiveStateChange: (@MainActor (Bool) -> Void)?
+    private var isLive = false
 
     init(
         plugin: DiscoveredPlugin,
@@ -38,6 +48,19 @@ actor PluginConnection {
         self.brokerBundleIdentifier = brokerBundleIdentifier
         self.relay = relay
         self.onLog = onLog
+    }
+
+    /// `PluginConnectionManager` wires this up before calling `start()`, so
+    /// no transition is ever missed.
+    func setOnLiveStateChange(_ handler: @escaping @MainActor (Bool) -> Void) {
+        onLiveStateChange = handler
+    }
+
+    private func notifyLiveState(_ live: Bool) {
+        guard isLive != live else { return }
+        isLive = live
+        guard let onLiveStateChange else { return }
+        Task { @MainActor in onLiveStateChange(live) }
     }
 
     private func qualifiedID(for localID: String) -> String {
@@ -54,6 +77,7 @@ actor PluginConnection {
         isRunning = false
         connection?.cancel()
         connection = nil
+        notifyLiveState(false)
         await dismissAllActiveActivities()
     }
 
@@ -62,15 +86,25 @@ actor PluginConnection {
             let didConnect = await connectOnce()
             if didConnect {
                 reconnectDelay = 1
+                notifyLiveState(true)
                 await receiveLoop()
             }
             connection = nil
+            notifyLiveState(false)
             await dismissAllActiveActivities()
             guard isRunning else { return }
             try? await Task.sleep(nanoseconds: UInt64(reconnectDelay * 1_000_000_000))
-            reconnectDelay = min(reconnectDelay * 2, 30)
+            reconnectDelay = min(reconnectDelay * 2, maxReconnectDelay)
         }
     }
+
+    /// A Unix domain socket connect attempt against a path that doesn't
+    /// exist yet lands in `.waiting(POSIXErrorCode.ENOENT)` and never
+    /// progresses to `.ready` *or* `.failed` on its own -- confirmed
+    /// directly, matching `MediaPluginConnection`'s identical finding.
+    /// Without a bound this hangs `connectOnce()`, and therefore
+    /// `connectLoop`'s entire retry loop, forever.
+    private static let initialConnectTimeout: TimeInterval = 2
 
     /// Resolves once the connection reaches `.ready` or fails/times out.
     private func connectOnce() async -> Bool {
@@ -109,6 +143,13 @@ actor PluginConnection {
                 }
             }
             newConnection.start(queue: .main)
+
+            // Same serial `.main` queue as stateUpdateHandler above, so no
+            // race with a `.ready`/`.failed` delivered around the same time.
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.initialConnectTimeout) {
+                guard !guardBox.resumed else { return }
+                newConnection.cancel()
+            }
         }
     }
 
