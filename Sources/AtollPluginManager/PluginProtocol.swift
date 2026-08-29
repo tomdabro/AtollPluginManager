@@ -7,16 +7,27 @@
 //  the full Atoll descriptor surface so plugin authors don't need to know
 //  AtollExtensionKit at all.
 //
-//  Protocol version 1. Bump `PluginProtocolVersion.current` and branch on
-//  a `version` field in `PluginMessage` before changing wire shape, so
-//  existing plugins aren't broken by a manager update (Phase 8).
+//  Versioned independently of AtollRPC (the ws://127.0.0.1:9020 protocol
+//  between this broker and Atoll itself, see ExtensionRPCServer in the Atoll
+//  repo): a plugin author only ever needs to track this number, never
+//  Atoll's own RPC version, since the broker is the only thing that speaks
+//  AtollRPC. `PluginManifest.protocolVersion` declares which version a
+//  plugin speaks; `PluginDiscovery` rejects a manifest declaring a version
+//  this broker build doesn't support, with a clear reason, instead of
+//  connecting and failing unpredictably on the first message.
 //
 
 import Foundation
 import AtollExtensionKit
 
 enum PluginProtocolVersion {
+    /// The version this broker build emits in its own documentation/samples
+    /// and defaults new manifests to.
     static let current = 1
+    /// Every wire-shape version this broker build can still understand.
+    /// Widen when a new version is additive; drop the oldest only in a
+    /// release that also documents the break.
+    static let supported: ClosedRange<Int> = 1...1
 }
 
 enum PluginMessageType: String, Codable {

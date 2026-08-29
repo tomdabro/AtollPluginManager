@@ -9,14 +9,31 @@ import XCTest
 final class PluginManifestTests: XCTestCase {
     func testDecodesValidManifest() throws {
         let json = """
-        {"id":"cliamp","name":"cliamp","category":"liveActivity","transport":"unixSocket","socketPath":"cliamp.sock"}
+        {"id":"cliamp","name":"cliamp","category":"liveActivity","transport":"unixSocket","socketPath":"cliamp.sock","protocolVersion":1}
         """.data(using: .utf8)!
 
         let manifest = try JSONDecoder().decode(PluginManifest.self, from: json)
         XCTAssertEqual(manifest.id, "cliamp")
         XCTAssertEqual(manifest.category, .liveActivity)
         XCTAssertEqual(manifest.transport, .unixSocket)
+        XCTAssertEqual(manifest.protocolVersion, 1)
         XCTAssertNil(manifest.validationError)
+    }
+
+    func testMissingProtocolVersionDefaultsToOne() throws {
+        let json = """
+        {"id":"cliamp","name":"cliamp","category":"liveActivity","transport":"unixSocket","socketPath":"cliamp.sock"}
+        """.data(using: .utf8)!
+
+        let manifest = try JSONDecoder().decode(PluginManifest.self, from: json)
+        XCTAssertEqual(manifest.protocolVersion, 1)
+        XCTAssertNil(manifest.validationError)
+    }
+
+    func testValidationErrorForUnsupportedProtocolVersion() {
+        let manifest = PluginManifest(id: "x", name: "x", category: .liveActivity, transport: .unixSocket, socketPath: "x.sock", protocolVersion: 99)
+        XCTAssertNotNil(manifest.validationError)
+        XCTAssertTrue(manifest.validationError?.contains("protocolVersion") == true)
     }
 
     func testRejectsUnknownCategory() {

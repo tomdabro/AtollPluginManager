@@ -31,6 +31,33 @@ struct PluginManifest: Codable, Equatable {
     /// Path to the plugin's listening socket. Relative paths resolve against
     /// the manifest's own folder; absolute paths (leading "/") are used as-is.
     let socketPath: String
+    /// Which version of the plugin<->broker wire protocol
+    /// (PluginProtocolVersion.current) the plugin speaks. Defaults to 1 if
+    /// omitted, since that was the only version before this field existed.
+    let protocolVersion: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, category, transport, socketPath, protocolVersion
+    }
+
+    init(id: String, name: String, category: PluginCategory, transport: PluginTransport, socketPath: String, protocolVersion: Int = PluginProtocolVersion.current) {
+        self.id = id
+        self.name = name
+        self.category = category
+        self.transport = transport
+        self.socketPath = socketPath
+        self.protocolVersion = protocolVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        category = try container.decode(PluginCategory.self, forKey: .category)
+        transport = try container.decode(PluginTransport.self, forKey: .transport)
+        socketPath = try container.decode(String.self, forKey: .socketPath)
+        protocolVersion = try container.decodeIfPresent(Int.self, forKey: .protocolVersion) ?? 1
+    }
 
     /// Structural validation beyond what decoding already guarantees (decoding
     /// already rejects unknown `category`/`transport` values and missing keys).
@@ -38,6 +65,9 @@ struct PluginManifest: Codable, Equatable {
         if id.trimmingCharacters(in: .whitespaces).isEmpty { return "\"id\" is empty" }
         if name.trimmingCharacters(in: .whitespaces).isEmpty { return "\"name\" is empty" }
         if socketPath.trimmingCharacters(in: .whitespaces).isEmpty { return "\"socketPath\" is empty" }
+        if !PluginProtocolVersion.supported.contains(protocolVersion) {
+            return "protocolVersion \(protocolVersion) is not supported by this broker (supports \(PluginProtocolVersion.supported))"
+        }
         return nil
     }
 
