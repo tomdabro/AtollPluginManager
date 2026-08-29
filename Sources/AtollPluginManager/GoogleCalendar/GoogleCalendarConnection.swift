@@ -1,0 +1,192 @@
+//
+//  GoogleCalendarConnection.swift
+//  AtollPluginManager
+//
+//  Broker-native Google Calendar integration: unlike media sources, there's
+//  no independently-useful external "Google Calendar" plugin process to
+//  relay -- this actor does the OAuth + REST polling itself and pushes
+//  snapshots to Atoll over the calendar-source RPC channel, mirroring
+//  MediaPluginConnection's relationship to `relay` but without a Unix
+//  socket to an external process.
+//
+
+import Foundation
+
+actor GoogleCalendarConnection {
+    static let sourceID = "google-calendar"
+    static let sourceName = "Google Calendar"
+
+    /// How far ahead/behind "now" each poll fetches events for -- generous
+    /// enough to cover the notch's day view and the lock screen's "all time"
+    /// lookahead option without Atoll needing to ask the broker for a
+    /// specific window (this is push-based: whatever's published here is
+    /// all Atoll has until the next poll).
+    private static let lookBehind: TimeInterval = 24 * 3600
+    private static let lookAhead: TimeInterval = 60 * 24 * 3600
+    /// Google API quota is generous for a single desktop app; this is about
+    /// keeping calendar data reasonably fresh without polling pointlessly
+    /// often for something that isn't as latency-sensitive as Now Playing state.
+    private static let pollInterval: TimeInterval = 180
+
+    private let relay: any CalendarRelay
+    private let oauth: GoogleCalendarOAuthService
+    private let api: GoogleCalendarAPI
+    private let tokenStore: GoogleCalendarTokenStoring
+    private let onLog: @Sendable (String) -> Void
+
+    private var pollTask: Task<Void, Never>?
+    private var isRegistered = false
+
+    private(set) var isAuthenticated = false
+    private(set) var isAuthorizing = false
+    private(set) var error: GoogleCalendarError?
+
+    private var onStateChange: (@MainActor () -> Void)?
+
+    init(
+        relay: any CalendarRelay,
+        tokenStore: GoogleCalendarTokenStoring = KeychainGoogleCalendarTokenStore(),
+        httpClient: GoogleCalendarHTTPClient = URLSessionGoogleCalendarHTTPClient(),
+        onLog: @escaping @Sendable (String) -> Void = { _ in }
+    ) {
+        self.relay = relay
+        self.tokenStore = tokenStore
+        let oauth = GoogleCalendarOAuthService(tokenStore: tokenStore, httpClient: httpClient)
+        self.oauth = oauth
+        self.api = GoogleCalendarAPI(tokenProvider: oauth, httpClient: httpClient)
+        self.onLog = onLog
+    }
+
+    /// The UI's `@MainActor` bridge wires this up before calling `start()`.
+    func setOnStateChange(_ handler: @escaping @MainActor () -> Void) {
+        onStateChange = handler
+    }
+
+    private func notifyStateChange() {
+        guard let onStateChange else { return }
+        Task { @MainActor in onStateChange() }
+    }
+
+    /// Resumes polling on launch if a token pair is already stored, without
+    /// requiring the user to click Connect again every relaunch.
+    func start() async {
+        refreshAuthenticationState()
+        if isAuthenticated {
+            startPolling()
+        }
+    }
+
+    func getClientSecret() -> String {
+        tokenStore.read(.clientSecret) ?? ""
+    }
+
+    func setClientSecret(_ newValue: String) {
+        if newValue.isEmpty {
+            tokenStore.delete(.clientSecret)
+        } else {
+            tokenStore.write(newValue, account: .clientSecret)
+        }
+    }
+
+    // MARK: - Connect / Disconnect
+
+    func connect() async {
+        error = nil
+        notifyStateChange()
+        let clientID = GoogleCalendarPreferences.clientID().trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = getClientSecret().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clientID.isEmpty else {
+            error = .missingClientID
+            notifyStateChange()
+            return
+        }
+        guard !secret.isEmpty else {
+            error = .missingClientSecret
+            notifyStateChange()
+            return
+        }
+
+        isAuthorizing = true
+        notifyStateChange()
+
+        do {
+            try await oauth.authorize(clientID: clientID, clientSecret: secret)
+            error = nil
+        } catch GoogleCalendarError.canceled {
+            // The user closed the browser tab, or never got to it; not an error.
+        } catch let calendarError as GoogleCalendarError {
+            error = calendarError
+        } catch {
+            self.error = .loopbackServerFailed(String(describing: error))
+        }
+
+        isAuthorizing = false
+        refreshAuthenticationState()
+        if isAuthenticated {
+            startPolling()
+        }
+        notifyStateChange()
+    }
+
+    func disconnect() async {
+        stopPolling()
+        if isRegistered {
+            try? await relay.unregisterCalendarSource(sourceID: Self.sourceID)
+            isRegistered = false
+        }
+        await oauth.clearTokens()
+        error = nil
+        refreshAuthenticationState()
+        notifyStateChange()
+    }
+
+    // MARK: - Polling
+
+    private func startPolling() {
+        guard pollTask == nil else { return }
+        pollTask = Task { await self.pollLoop() }
+    }
+
+    private func stopPolling() {
+        pollTask?.cancel()
+        pollTask = nil
+    }
+
+    private func pollLoop() async {
+        while !Task.isCancelled {
+            await pollOnce()
+            try? await Task.sleep(nanoseconds: UInt64(Self.pollInterval * 1_000_000_000))
+        }
+    }
+
+    private func pollOnce() async {
+        if !isRegistered {
+            do {
+                try await relay.registerCalendarSource(sourceID: Self.sourceID, name: Self.sourceName, accountLabel: nil)
+                isRegistered = true
+            } catch {
+                onLog("[google-calendar] failed to register calendar source: \(error.localizedDescription)")
+                return
+            }
+        }
+
+        let calendars = await api.calendars()
+        let now = Date()
+        let start = now.addingTimeInterval(-Self.lookBehind)
+        let end = now.addingTimeInterval(Self.lookAhead)
+        let events = await api.events(from: start, to: end, calendarIDs: calendars.map { $0.id })
+
+        do {
+            try await relay.publishCalendarState(sourceID: Self.sourceID, calendars: calendars, events: events)
+        } catch {
+            onLog("[google-calendar] failed to publish calendar state: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - State
+
+    private func refreshAuthenticationState() {
+        let hasRefreshToken = !(tokenStore.read(.refreshToken) ?? "").isEmpty
+        isAuthenticated = hasRefreshToken && !GoogleCalendarPreferences.clientID().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}

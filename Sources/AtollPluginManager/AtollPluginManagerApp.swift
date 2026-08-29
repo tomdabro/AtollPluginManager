@@ -18,6 +18,7 @@ struct AtollPluginManagerApp: App {
     @StateObject private var connectionModel: ConnectionStatusModel
     @StateObject private var discovery: PluginDiscovery
     @StateObject private var connectionManager: PluginConnectionManager
+    @StateObject private var googleCalendar: GoogleCalendarViewState
 
     init() {
         let client = AtollRPCClient(bundleIdentifier: AtollPluginManagerApp.bundleIdentifier)
@@ -31,6 +32,9 @@ struct AtollPluginManagerApp: App {
             connectionStatus: statusModel,
             brokerBundleIdentifier: AtollPluginManagerApp.bundleIdentifier
         ))
+        _googleCalendar = StateObject(wrappedValue: GoogleCalendarViewState(
+            connection: GoogleCalendarConnection(relay: client)
+        ))
     }
 
     var body: some Scene {
@@ -39,10 +43,12 @@ struct AtollPluginManagerApp: App {
                 .environmentObject(connectionModel)
                 .environmentObject(discovery)
                 .environmentObject(connectionManager)
+                .environmentObject(googleCalendar)
                 .task {
                     await connectionModel.start()
                     discovery.start()
                     connectionManager.start()
+                    await googleCalendar.start()
                 }
         }
         .windowResizability(.contentSize)

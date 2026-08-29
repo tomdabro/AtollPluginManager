@@ -80,10 +80,23 @@ protocol MediaRelay: Actor {
     func setOnMediaCommand(_ handler: @escaping @MainActor (String, AtollMediaCommand) -> Void)
 }
 
+/// What a `GoogleCalendarConnection` needs to relay calendar/event snapshots
+/// -- narrows `AtollRPCClient` down to the three calendar-source calls, same
+/// testability rationale as `MediaRelay`.
+protocol CalendarRelay: Actor {
+    func registerCalendarSource(sourceID: String, name: String, accountLabel: String?) async throws
+    func unregisterCalendarSource(sourceID: String) async throws
+    func publishCalendarState(
+        sourceID: String,
+        calendars: [CalendarSourceCalendarPayload],
+        events: [CalendarSourceEventPayload]
+    ) async throws
+}
+
 /// Owns the WebSocket connection to Atoll: connect/reconnect with backoff,
 /// request/check authorization once, and issue live-activity / lock-screen /
 /// notch RPC calls on behalf of registered plugins.
-actor AtollRPCClient: ActivityRelay, MediaRelay {
+actor AtollRPCClient: ActivityRelay, MediaRelay, CalendarRelay {
     private let bundleIdentifier: String
     private let host: String
     private let port: UInt16
@@ -372,6 +385,35 @@ actor AtollRPCClient: ActivityRelay, MediaRelay {
         if let isShuffled { params["isShuffled"] = .bool(isShuffled) }
         if let repeatMode { params["repeatMode"] = .string(repeatMode) }
         _ = try await call(method: "atoll.publishNowPlayingState", params: params)
+    }
+
+    // MARK: - Calendar Sources
+
+    func registerCalendarSource(sourceID: String, name: String, accountLabel: String?) async throws {
+        var params: [String: RPCValue] = [
+            "sourceID": .string(sourceID),
+            "name": .string(name)
+        ]
+        if let accountLabel { params["accountLabel"] = .string(accountLabel) }
+        _ = try await call(method: "atoll.registerCalendarSource", params: params)
+    }
+
+    func unregisterCalendarSource(sourceID: String) async throws {
+        _ = try await call(method: "atoll.unregisterCalendarSource", params: [
+            "sourceID": .string(sourceID)
+        ])
+    }
+
+    func publishCalendarState(
+        sourceID: String,
+        calendars: [CalendarSourceCalendarPayload],
+        events: [CalendarSourceEventPayload]
+    ) async throws {
+        _ = try await call(method: "atoll.publishCalendarState", params: [
+            "sourceID": .string(sourceID),
+            "calendars": try RPCValue.encoding(calendars),
+            "events": try RPCValue.encoding(events)
+        ])
     }
 
     // MARK: - RPC Call Plumbing

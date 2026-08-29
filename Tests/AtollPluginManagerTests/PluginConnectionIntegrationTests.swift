@@ -13,10 +13,10 @@ import Network
 import AtollExtensionKit
 @testable import AtollPluginManager
 
-/// Records every call instead of talking to a real Atoll. Conforms to both
-/// relay protocols so the same fake covers live-activity and media-source
-/// connection tests.
-actor FakeRelay: ActivityRelay, MediaRelay {
+/// Records every call instead of talking to a real Atoll. Conforms to every
+/// relay protocol so the same fake covers live-activity, media-source, and
+/// calendar-source connection tests.
+actor FakeRelay: ActivityRelay, MediaRelay, CalendarRelay {
     private(set) var presented: [AtollLiveActivityDescriptor] = []
     private(set) var updated: [AtollLiveActivityDescriptor] = []
     private(set) var dismissedIDs: [String] = []
@@ -25,6 +25,10 @@ actor FakeRelay: ActivityRelay, MediaRelay {
     private(set) var unregisteredSources: [String] = []
     private(set) var publishedStates: [(sourceID: String, title: String, isPlaying: Bool, isShuffled: Bool?, repeatMode: String?)] = []
     private var onMediaCommand: (@MainActor (String, AtollMediaCommand) -> Void)?
+
+    private(set) var registeredCalendarSources: [String] = []
+    private(set) var unregisteredCalendarSources: [String] = []
+    private(set) var publishedCalendarStates: [(sourceID: String, calendars: [CalendarSourceCalendarPayload], events: [CalendarSourceEventPayload])] = []
 
     func presentLiveActivity(_ descriptor: AtollLiveActivityDescriptor) async throws {
         presented.append(descriptor)
@@ -68,6 +72,22 @@ actor FakeRelay: ActivityRelay, MediaRelay {
     /// Test hook: simulates Atoll pushing a command notification.
     func simulateMediaCommand(_ command: AtollMediaCommand, to sourceID: String) async {
         await onMediaCommand?(sourceID, command)
+    }
+
+    func registerCalendarSource(sourceID: String, name: String, accountLabel: String?) async throws {
+        registeredCalendarSources.append(sourceID)
+    }
+
+    func unregisterCalendarSource(sourceID: String) async throws {
+        unregisteredCalendarSources.append(sourceID)
+    }
+
+    func publishCalendarState(
+        sourceID: String,
+        calendars: [CalendarSourceCalendarPayload],
+        events: [CalendarSourceEventPayload]
+    ) async throws {
+        publishedCalendarStates.append((sourceID: sourceID, calendars: calendars, events: events))
     }
 }
 

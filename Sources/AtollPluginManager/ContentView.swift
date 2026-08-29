@@ -12,6 +12,8 @@ struct ContentView: View {
     @EnvironmentObject private var connection: ConnectionStatusModel
     @EnvironmentObject private var discovery: PluginDiscovery
     @EnvironmentObject private var connectionManager: PluginConnectionManager
+    @EnvironmentObject private var googleCalendar: GoogleCalendarViewState
+    @AppStorage("googleCalendarClientID") private var googleCalendarClientID: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -36,6 +38,10 @@ struct ContentView: View {
             Divider()
 
             pluginsSection
+
+            Divider()
+
+            googleCalendarSection
         }
         .padding(24)
         .frame(width: 420)
@@ -114,6 +120,100 @@ struct ContentView: View {
             }
         }
     }
+
+    @ViewBuilder
+    private var googleCalendarSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Google Calendar")
+                .font(.headline)
+
+            Text("Connects directly to your Google account via OAuth and pushes calendar events to Atoll as a calendar source. Create a free OAuth client at console.cloud.google.com (APIs & Services → Credentials → Create Credentials → OAuth client ID → Desktop app), enable the Calendar API for that project, then paste its Client ID and Client Secret here.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            TextField("Client ID", text: $googleCalendarClientID)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption.monospaced())
+
+            SecureField("Client Secret", text: $googleCalendar.clientSecretField)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption.monospaced())
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(googleCalendar.isAuthenticated ? Color.green : Color.secondary)
+                    .frame(width: 8, height: 8)
+                Text(googleCalendarStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let error = googleCalendar.error {
+                Text(message(for: error))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button(googleCalendar.isAuthorizing ? "Connecting…" : "Connect Google Calendar") {
+                    googleCalendar.connect()
+                }
+                .disabled(
+                    googleCalendarClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || googleCalendar.clientSecretField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || googleCalendar.isAuthorizing
+                )
+
+                Button("Disconnect") {
+                    googleCalendar.disconnect()
+                }
+                .disabled(!googleCalendar.isAuthenticated)
+
+                Link("Open Console", destination: URL(string: "https://console.cloud.google.com/apis/credentials")!)
+                    .font(.caption)
+            }
+
+            Text("While the OAuth consent screen is in \"Testing\" publish status, Google expires the connection after 7 days — reconnect here when that happens.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var googleCalendarStatusText: String {
+        if googleCalendar.isAuthenticated {
+            return "Connected — pushing events to Atoll."
+        }
+        if googleCalendarClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || googleCalendar.clientSecretField.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Not connected."
+        }
+        return "Credentials saved. Connect your Google account."
+    }
+
+    private func message(for error: GoogleCalendarError) -> String {
+        switch error {
+        case .missingClientID:
+            return "Paste the Client ID of your Google Cloud OAuth client first."
+        case .missingClientSecret:
+            return "Paste the Client Secret of your Google Cloud OAuth client first."
+        case .secureRandomUnavailable:
+            return "Unable to generate secure random data for the login."
+        case .canceled:
+            return ""
+        case .loopbackServerFailed(let description):
+            return "Could not start the local sign-in listener: \(description)"
+        case .missingAuthorizationCode:
+            return "Google did not return an authorization code."
+        case .stateMismatch:
+            return "Google sign-in response didn't match the request. Try connecting again."
+        case .tokenExchangeFailed(let description):
+            return "Token exchange failed: \(description)"
+        case .refreshTokenRevoked:
+            return "Google revoked access. Connect your account again."
+        }
+    }
 }
 
 #Preview {
@@ -124,4 +224,5 @@ struct ContentView: View {
         .environmentObject(statusModel)
         .environmentObject(discovery)
         .environmentObject(PluginConnectionManager(discovery: discovery, relay: client, connectionStatus: statusModel, brokerBundleIdentifier: "preview"))
+        .environmentObject(GoogleCalendarViewState(connection: GoogleCalendarConnection(relay: client)))
 }
