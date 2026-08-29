@@ -163,13 +163,6 @@ struct ContentView: View {
                     .background(Color.secondary.opacity(0.15))
                     .cornerRadius(4)
                 Spacer()
-                Toggle("", isOn: Binding(
-                    get: { googleCalendar.isEnabled },
-                    set: { googleCalendar.setEnabled($0) }
-                ))
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .controlSize(.small)
                 Button {
                     showingGoogleCalendarConfig.toggle()
                 } label: {
@@ -178,6 +171,13 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                Toggle("", isOn: Binding(
+                    get: { googleCalendar.isEnabled },
+                    set: { googleCalendar.setEnabled($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .controlSize(.small)
             }
 
             if showingGoogleCalendarConfig {
