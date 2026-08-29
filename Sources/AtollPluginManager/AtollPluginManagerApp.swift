@@ -21,12 +21,14 @@ struct AtollPluginManagerApp: App {
 
     init() {
         let client = AtollRPCClient(bundleIdentifier: AtollPluginManagerApp.bundleIdentifier)
-        _connectionModel = StateObject(wrappedValue: ConnectionStatusModel(client: client))
+        let statusModel = ConnectionStatusModel(client: client)
+        _connectionModel = StateObject(wrappedValue: statusModel)
         let discovery = PluginDiscovery()
         _discovery = StateObject(wrappedValue: discovery)
         _connectionManager = StateObject(wrappedValue: PluginConnectionManager(
             discovery: discovery,
             relay: client,
+            connectionStatus: statusModel,
             brokerBundleIdentifier: AtollPluginManagerApp.bundleIdentifier
         ))
     }

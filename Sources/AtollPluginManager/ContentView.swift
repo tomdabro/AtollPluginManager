@@ -119,8 +119,9 @@ struct ContentView: View {
 #Preview {
     let discovery = PluginDiscovery()
     let client = AtollRPCClient(bundleIdentifier: "preview")
-    return ContentView()
-        .environmentObject(ConnectionStatusModel(client: client))
+    let statusModel = ConnectionStatusModel(client: client)
+    ContentView()
+        .environmentObject(statusModel)
         .environmentObject(discovery)
-        .environmentObject(PluginConnectionManager(discovery: discovery, relay: client, brokerBundleIdentifier: "preview"))
+        .environmentObject(PluginConnectionManager(discovery: discovery, relay: client, connectionStatus: statusModel, brokerBundleIdentifier: "preview"))
 }

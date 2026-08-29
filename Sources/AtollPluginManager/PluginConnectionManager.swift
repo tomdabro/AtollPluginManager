@@ -21,30 +21,58 @@ final class PluginConnectionManager: ObservableObject {
 
     private let discovery: PluginDiscovery
     private let relay: any ActivityRelay & MediaRelay
+    private let connectionStatus: ConnectionStatusModel
     private let brokerBundleIdentifier: String
     private var activityConnections: [String: PluginConnection] = [:]
     private var mediaConnections: [String: MediaPluginConnection] = [:]
-    private var cancellable: AnyCancellable?
+    private var discoveryCancellable: AnyCancellable?
+    private var atollStateCancellable: AnyCancellable?
     private var latestPlugins: [String: DiscoveredPlugin] = [:]
 
-    init(discovery: PluginDiscovery, relay: any ActivityRelay & MediaRelay, brokerBundleIdentifier: String) {
+    init(
+        discovery: PluginDiscovery,
+        relay: any ActivityRelay & MediaRelay,
+        connectionStatus: ConnectionStatusModel,
+        brokerBundleIdentifier: String
+    ) {
         self.discovery = discovery
         self.relay = relay
+        self.connectionStatus = connectionStatus
         self.brokerBundleIdentifier = brokerBundleIdentifier
     }
 
     func start() {
-        cancellable = discovery.$plugins
+        discoveryCancellable = discovery.$plugins
             .receive(on: DispatchQueue.main)
             .sink { [weak self] plugins in
                 self?.latestPlugins = plugins
                 self?.reconcile()
             }
 
+        // A still-connected plugin's Unix socket never drops just because
+        // Atoll itself restarted, so `MediaPluginConnection.connectLoop`
+        // never gets a reason to re-run `registerMediaSource`. Re-sync every
+        // media connection whenever the broker's Atoll connection becomes
+        // freshly authorized (first connect, Atoll relaunch, sleep/wake,
+        // or any dropped-socket reconnect) so a fresh Atoll instance always
+        // learns about sources that were already connected to us.
+        atollStateCancellable = connectionStatus.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                guard state == .authorized else { return }
+                self?.handleAtollReconnected()
+            }
+
         Task {
             await relay.setOnMediaCommand { [weak self] sourceID, command in
                 self?.dispatchMediaCommand(command, to: sourceID)
             }
+        }
+    }
+
+    private func handleAtollReconnected() {
+        for connection in mediaConnections.values {
+            Task { await connection.resyncRegistration() }
         }
     }
 

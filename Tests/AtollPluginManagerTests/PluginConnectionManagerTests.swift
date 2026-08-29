@@ -36,7 +36,12 @@ final class PluginConnectionManagerTests: XCTestCase {
 
         let discovery = PluginDiscovery(pluginsDirectory: tempDirectory)
         let relay = FakeRelay()
-        let manager = PluginConnectionManager(discovery: discovery, relay: relay, brokerBundleIdentifier: "broker")
+        let manager = PluginConnectionManager(
+            discovery: discovery,
+            relay: relay,
+            connectionStatus: ConnectionStatusModel(client: AtollRPCClient(bundleIdentifier: "test")),
+            brokerBundleIdentifier: "broker"
+        )
 
         manager.start()
         discovery.start()

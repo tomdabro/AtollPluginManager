@@ -164,4 +164,59 @@ final class MediaPluginConnectionTests: XCTestCase {
         await connection.stop()
         server.stop()
     }
+
+    /// Simulates Atoll itself restarting while the plugin's Unix socket to
+    /// the broker stays up the whole time: `connectLoop` never re-runs, so
+    /// only an explicit `resyncRegistration()` call (as `PluginConnectionManager`
+    /// issues on every `.authorized` transition) can recover.
+    func testResyncRegistrationReRegistersAfterAtollForgetsSource() async throws {
+        let socketPath = testSocketPath()
+        let server = try FakePluginServer(socketPath: socketPath)
+        let relay = FakeRelay()
+
+        let plugin = DiscoveredPlugin(
+            manifest: PluginManifest(id: "cliamp", name: "cliamp", category: .media, transport: .unixSocket, socketPath: socketPath),
+            folderURL: URL(fileURLWithPath: "/tmp")
+        )
+        let connection = MediaPluginConnection(plugin: plugin, relay: relay)
+
+        async let serverReady: Void = server.start()
+        await connection.start()
+        try await serverReady
+        _ = await waitUntil { await relay.registeredSources.contains("cliamp") }
+        let registrationsBeforeResync = await relay.registeredSources.filter { $0 == "cliamp" }.count
+
+        // Atoll restarts: the plugin's own socket to the broker never
+        // dropped, so nothing in MediaPluginConnection would otherwise
+        // re-register on its own.
+        await connection.resyncRegistration()
+
+        let resynced = await waitUntil {
+            await relay.registeredSources.filter { $0 == "cliamp" }.count > registrationsBeforeResync
+        }
+        XCTAssertTrue(resynced, "expected resyncRegistration to re-issue registerMediaSource")
+
+        await connection.stop()
+        server.stop()
+    }
+
+    /// A resync request that arrives while the plugin socket happens to be
+    /// disconnected (mid-reconnect-backoff) must not crash or register a
+    /// source with a dead connection -- connectLoop's own registerSource
+    /// call once it reconnects is what should register it.
+    func testResyncRegistrationIsNoopWithoutAnActiveConnection() async throws {
+        let socketPath = testSocketPath()
+        let plugin = DiscoveredPlugin(
+            manifest: PluginManifest(id: "cliamp", name: "cliamp", category: .media, transport: .unixSocket, socketPath: socketPath),
+            folderURL: URL(fileURLWithPath: "/tmp")
+        )
+        let relay = FakeRelay()
+        let connection = MediaPluginConnection(plugin: plugin, relay: relay)
+
+        // Never started, so `connection` is nil the whole time.
+        await connection.resyncRegistration()
+
+        let registered = await relay.registeredSources
+        XCTAssertTrue(registered.isEmpty, "resync must not register a source with no live plugin connection")
+    }
 }

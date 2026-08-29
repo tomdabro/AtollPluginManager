@@ -196,4 +196,19 @@ actor MediaPluginConnection {
             })
         }
     }
+
+    /// Called by `PluginConnectionManager` when the broker's WebSocket to
+    /// Atoll transitions back to `.authorized` (Atoll relaunched, woke from
+    /// sleep, or the socket briefly dropped and reconnected). The plugin's
+    /// own Unix socket connection can easily have stayed up the entire time
+    /// -- `connectLoop` only calls `registerSource()` when *this* connection
+    /// (re)establishes, so a fresh Atoll process has no record of this
+    /// source even though `isRegistered` still (correctly, for the old
+    /// belief) says true. Re-register unconditionally so the new Atoll
+    /// instance learns about an already-connected source without requiring
+    /// the user to disable/re-enable the plugin.
+    func resyncRegistration() async {
+        guard connection != nil else { return }
+        await registerSource()
+    }
 }
