@@ -27,21 +27,25 @@ its own subfolder containing a `plugin.json`:
 {
   "id": "cliamp",
   "name": "cliamp",
-  "category": "liveActivity",
+  "category": "media",
   "transport": "unixSocket",
   "socketPath": "cliamp.sock",
-  "protocolVersion": 1
+  "protocolVersion": 1,
+  "supportsSeek": true,
+  "supportsSkip": true
 }
 ```
 
 | Field             | Type   | Required | Notes                                                                                                  |
 |--------------------|--------|----------|----------------------------------------------------------------------------------------------------------|
 | `id`               | string | yes      | Unique across every plugin the broker discovers. Non-empty.                                              |
-| `name`             | string | yes      | Display name shown in the broker's UI. Non-empty.                                                        |
-| `category`         | string | yes      | Only `"liveActivity"` is implemented today.                                                              |
+| `name`             | string | yes      | Display name shown in the broker's UI and, for `"media"` plugins, in Atoll's controller picker.          |
+| `category`         | string | yes      | `"liveActivity"` (banner) or `"media"` (Now Playing source). See [Live activity protocol](#live-activity-protocol) / [Media source protocol](#media-source-protocol). |
 | `transport`        | string | yes      | Only `"unixSocket"` is implemented today.                                                                |
 | `socketPath`       | string | yes      | Absolute path (`/…`), or relative to this manifest's own folder. See the length note below.              |
 | `protocolVersion`  | int    | no       | Which version of this document the plugin speaks. Defaults to `1` if omitted. See [Versioning](#versioning). |
+| `supportsSeek`     | bool   | no       | `category: "media"` only. Whether Atoll should offer seek controls for this source. Defaults to `true`.  |
+| `supportsSkip`     | bool   | no       | `category: "media"` only. Whether Atoll should offer next/previous controls. Defaults to `true`.         |
 
 The broker never launches a plugin — this is **passive discovery**. Write
 your manifest, start listening, and the broker connects to you (with
@@ -73,7 +77,7 @@ in its Settings UI, and via `stderr` while running from a terminal) if it:
 A rejected manifest never gets a connection attempt; fix it and the next
 directory-watch tick (or the next broker launch) picks it up.
 
-## Wire protocol
+## Live activity protocol (`category: "liveActivity"`)
 
 Once the broker connects to your socket, write **one JSON object per line**
 (`\n`-terminated) whenever your plugin's state changes. The broker never
@@ -149,6 +153,56 @@ integration.
   the moment your socket connection closes, so a crash or restart never
   leaves a stale activity in Atoll's notch.
 
+## Media source protocol (`category: "media"`)
+
+Same framing as the live activity protocol (one JSON object per line), but
+there's no register/present/dismiss lifecycle: the manifest's own
+`id`/`name`/`supportsSeek`/`supportsSkip` already tell Atoll everything it
+needs, so the connection existing at all *is* the registration. You send
+snapshots of what's currently playing; the broker relays commands from
+Atoll's notch controls back to you.
+
+### Plugin → broker: `nowPlaying`
+
+```json
+{"title":"Song Title","artist":"Artist","album":"Album","artworkBase64":"iVBORw0KGgo...","isPlaying":true,"elapsedTime":42.5,"duration":213.0,"isShuffled":false,"repeatMode":"off"}
+```
+
+| Field            | Type    | Required | Notes                                                              |
+|-------------------|---------|----------|------------------------------------------------------------------------|
+| `title`           | string  | yes      | Non-empty. Messages with an empty title are rejected.                  |
+| `artist`          | string  | no       |                                                                      |
+| `album`           | string  | no       |                                                                      |
+| `artworkBase64`   | string  | no       | Base64-encoded artwork image data (PNG/JPEG).                          |
+| `isPlaying`       | bool    | yes      |                                                                      |
+| `elapsedTime`     | number  | yes      | Seconds.                                                             |
+| `duration`        | number  | no       | Seconds. Omit if unknown (e.g. a live stream).                         |
+| `isShuffled`      | bool    | no       | Omit if your source doesn't track shuffle state — Atoll's control renders "off" rather than a stale guess. |
+| `repeatMode`      | string  | no       | `"off"` / `"one"` / `"all"`. Same "omit if unknown" rule as `isShuffled`. |
+
+Send one of these on every state change (track change, play/pause, seek).
+There's no separate "dismiss": if your process disconnects, the broker
+unregisters the source from Atoll, same as the live activity protocol's
+dismiss-on-disconnect.
+
+### Broker → plugin: `mediaCommand`
+
+```json
+{"type":"mediaCommand","command":"seek","seekTo":95.0}
+```
+
+| Field       | Type            | Notes                                                                                  |
+|--------------|-----------------|--------------------------------------------------------------------------------------------|
+| `type`       | string          | Always `"mediaCommand"`.                                                                    |
+| `command`    | string          | One of `play`, `pause`, `togglePlayPause`, `nextTrack`, `previousTrack`, `seek`, `toggleShuffle`, `toggleRepeat`. |
+| `seekTo`     | number, omitted unless `command == "seek"` | Absolute position in seconds.                                        |
+
+These originate from the user interacting with Atoll's notch controls (or
+system media keys Atoll itself observes) for whichever source is currently
+selected. Apply them the same way you'd apply an OS media-key event —
+`nextTrack`/`previousTrack` only ever arrive if your manifest declared
+`supportsSkip: true`, and `seek` only if `supportsSeek: true`.
+
 ## Versioning
 
 This protocol is versioned independently of
@@ -175,12 +229,15 @@ Regardless of language, a plugin needs:
 1. Listen on a Unix domain socket at a short, stable path.
 2. Write a `plugin.json` (see above) pointing at that socket, into your own
    subfolder of `~/Library/Application Support/AtollPluginManager/Plugins/`.
-3. On accepting a connection, reset local "presented" state to empty.
-4. On every state change, write one JSON line (`presentActivity` /
-   `updateActivity` / `dismissActivity`) to whichever connection is
-   currently open — or drop it if none is, without marking anything as
-   presented.
-5. Optionally read back ack/error lines for debugging.
+3. For `category: "liveActivity"`: on accepting a connection, reset local
+   "presented" state to empty; on every state change, write one JSON line
+   (`presentActivity` / `updateActivity` / `dismissActivity`) to whichever
+   connection is currently open — or drop it if none is, without marking
+   anything as presented. For `category: "media"`: on every state change,
+   write one `nowPlaying` line the same way, and apply `mediaCommand` lines
+   the broker sends back.
+4. Optionally read back ack/error (`liveActivity`) or `mediaCommand`
+   (`media`) lines for debugging or command handling.
 
 See `tomdabro/cliamp`'s `atollplugin/` package for a complete, tested
-example (Go, ~200 lines including manifest writing and reconnect handling).
+`category: "media"` example (Go).

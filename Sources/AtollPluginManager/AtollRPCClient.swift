@@ -39,6 +39,8 @@ enum AtollMediaCommand: Equatable {
     case nextTrack
     case previousTrack
     case seek(to: TimeInterval)
+    case toggleShuffle
+    case toggleRepeat
 
     init?(rpcCommandName: String, seekTo: Double?) {
         switch rpcCommandName {
@@ -50,6 +52,8 @@ enum AtollMediaCommand: Equatable {
         case "seek":
             guard let seekTo else { return nil }
             self = .seek(to: seekTo)
+        case "toggleShuffle": self = .toggleShuffle
+        case "toggleRepeat": self = .toggleRepeat
         default: return nil
         }
     }
@@ -69,7 +73,9 @@ protocol MediaRelay: Actor {
         artworkBase64: String?,
         isPlaying: Bool,
         elapsedTime: TimeInterval,
-        duration: TimeInterval?
+        duration: TimeInterval?,
+        isShuffled: Bool?,
+        repeatMode: String?
     ) async throws
     func setOnMediaCommand(_ handler: @escaping @MainActor (String, AtollMediaCommand) -> Void)
 }
@@ -349,7 +355,9 @@ actor AtollRPCClient: ActivityRelay, MediaRelay {
         artworkBase64: String?,
         isPlaying: Bool,
         elapsedTime: TimeInterval,
-        duration: TimeInterval?
+        duration: TimeInterval?,
+        isShuffled: Bool?,
+        repeatMode: String?
     ) async throws {
         var params: [String: RPCValue] = [
             "sourceID": .string(sourceID),
@@ -361,6 +369,8 @@ actor AtollRPCClient: ActivityRelay, MediaRelay {
         ]
         if let artworkBase64 { params["artworkBase64"] = .string(artworkBase64) }
         if let duration { params["duration"] = .double(duration) }
+        if let isShuffled { params["isShuffled"] = .bool(isShuffled) }
+        if let repeatMode { params["repeatMode"] = .string(repeatMode) }
         _ = try await call(method: "atoll.publishNowPlayingState", params: params)
     }
 

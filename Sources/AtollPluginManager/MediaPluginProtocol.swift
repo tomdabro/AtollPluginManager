@@ -22,6 +22,11 @@ struct MediaNowPlayingMessage: Codable {
     var isPlaying: Bool
     var elapsedTime: TimeInterval
     var duration: TimeInterval?
+    /// nil = the plugin doesn't report shuffle/repeat state.
+    var isShuffled: Bool?
+    /// "off" / "one" / "all"; nil carries the same "unknown" meaning as
+    /// `isShuffled`.
+    var repeatMode: String?
 }
 
 enum MediaPluginMessageError: Error, LocalizedError {
@@ -52,6 +57,8 @@ struct MediaCommandMessage: Codable {
         case .seek(let position):
             self.command = "seek"
             self.seekTo = position
+        case .toggleShuffle: self.command = "toggleShuffle"
+        case .toggleRepeat: self.command = "toggleRepeat"
         }
     }
 }

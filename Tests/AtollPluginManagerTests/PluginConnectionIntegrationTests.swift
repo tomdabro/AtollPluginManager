@@ -23,7 +23,7 @@ actor FakeRelay: ActivityRelay, MediaRelay {
 
     private(set) var registeredSources: [String] = []
     private(set) var unregisteredSources: [String] = []
-    private(set) var publishedStates: [(sourceID: String, title: String, isPlaying: Bool)] = []
+    private(set) var publishedStates: [(sourceID: String, title: String, isPlaying: Bool, isShuffled: Bool?, repeatMode: String?)] = []
     private var onMediaCommand: (@MainActor (String, AtollMediaCommand) -> Void)?
 
     func presentLiveActivity(_ descriptor: AtollLiveActivityDescriptor) async throws {
@@ -54,9 +54,11 @@ actor FakeRelay: ActivityRelay, MediaRelay {
         artworkBase64: String?,
         isPlaying: Bool,
         elapsedTime: TimeInterval,
-        duration: TimeInterval?
+        duration: TimeInterval?,
+        isShuffled: Bool?,
+        repeatMode: String?
     ) async throws {
-        publishedStates.append((sourceID: sourceID, title: title, isPlaying: isPlaying))
+        publishedStates.append((sourceID: sourceID, title: title, isPlaying: isPlaying, isShuffled: isShuffled, repeatMode: repeatMode))
     }
 
     func setOnMediaCommand(_ handler: @escaping @MainActor (String, AtollMediaCommand) -> Void) {

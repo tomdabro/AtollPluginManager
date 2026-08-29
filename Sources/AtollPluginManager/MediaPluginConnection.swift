@@ -174,7 +174,9 @@ actor MediaPluginConnection {
                 artworkBase64: message.artworkBase64,
                 isPlaying: message.isPlaying,
                 elapsedTime: message.elapsedTime,
-                duration: message.duration
+                duration: message.duration,
+                isShuffled: message.isShuffled,
+                repeatMode: message.repeatMode
             )
         } catch {
             onLog("[\(sourceID)] failed to publish Now Playing state: \(error.localizedDescription)")
