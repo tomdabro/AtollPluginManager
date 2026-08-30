@@ -4,9 +4,12 @@
 > [Tomasz Dabrowski](https://github.com/tomdabro) — all credit and
 > contribution for *this* repository goes to the author. Note that
 > [Atoll](https://github.com/Ebullioscopic/Atoll) itself, which this
-> broker connects to, is a separate project by a different author
+> broker connects to, and [AtollExtensionKit](https://github.com/Ebullioscopic/AtollExtensionKit),
+> the SDK this broker depends on for Atoll's descriptor types, are
+> separate projects by a different author
 > ([Ebullioscopic](https://github.com/Ebullioscopic)/kryoscopic) — all
-> credit for Atoll belongs to them, not to this repository.
+> credit for Atoll and AtollExtensionKit belongs to them, not to this
+> repository.
 
 A broker app that holds the single authorized connection to
 [Atoll](https://github.com/Ebullioscopic/Atoll) (a macOS Dynamic Island app)
