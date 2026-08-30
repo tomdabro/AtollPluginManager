@@ -13,6 +13,8 @@ struct ContentView: View {
     @EnvironmentObject private var discovery: PluginDiscovery
     @EnvironmentObject private var connectionManager: PluginConnectionManager
     @EnvironmentObject private var googleCalendar: GoogleCalendarViewState
+    @ObservedObject private var loginItemManager = LoginItemManager.shared
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("googleCalendarClientID") private var googleCalendarClientID: String = ""
     @State private var showingGoogleCalendarConfig = false
 
@@ -36,12 +38,21 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            Toggle("Launch at Login", isOn: Binding(
+                get: { loginItemManager.isEnabled },
+                set: { loginItemManager.setEnabled($0) }
+            ))
+            .font(.body)
+
             Divider()
 
             pluginsSection
         }
         .padding(24)
         .frame(width: 420)
+        .onAppear {
+            WindowVisibilityController.shared.openWindow = openWindow
+        }
     }
 
     private var statusText: String {

@@ -1,5 +1,9 @@
 # AtollPluginManager
 
+> **Status:** Work in progress. This is a personal project by
+> [Tomasz Dabrowski](https://github.com/tomdabro) — all credit and
+> contribution goes to the author.
+
 A broker app that holds the single authorized connection to
 [Atoll](https://github.com/Ebullioscopic/Atoll) (a macOS Dynamic Island app)
 and relays live activities on behalf of any number of plugins, so each

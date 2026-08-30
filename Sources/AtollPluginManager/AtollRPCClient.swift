@@ -136,6 +136,17 @@ actor AtollRPCClient: ActivityRelay, MediaRelay, CalendarRelay {
         onMediaCommand = handler
     }
 
+    /// Set once; delivered on the main actor. Fired when Atoll's "App
+    /// Permissions" row for this broker asks to bring its window forward —
+    /// see `WindowVisibilityController`. This app runs `.accessory` (no
+    /// Dock icon), so without this there'd be no way back to the window
+    /// short of relaunching the process.
+    private var onShowWindow: (@MainActor () -> Void)?
+
+    func setOnShowWindow(_ handler: @escaping @MainActor () -> Void) {
+        onShowWindow = handler
+    }
+
     init(bundleIdentifier: String, host: String = "127.0.0.1", port: UInt16 = ExtensionRPCConstants.port) {
         self.bundleIdentifier = bundleIdentifier
         self.host = host
@@ -241,6 +252,13 @@ actor AtollRPCClient: ActivityRelay, MediaRelay, CalendarRelay {
 
         if notification.method == "atoll.mediaCommand" {
             handleMediaCommandNotification(notification.params ?? [:])
+            return
+        }
+
+        if notification.method == "atoll.showBrokerWindow" {
+            if let handler = onShowWindow {
+                Task { @MainActor in handler() }
+            }
             return
         }
 
