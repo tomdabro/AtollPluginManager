@@ -9,7 +9,10 @@
 > separate projects by a different author
 > ([Ebullioscopic](https://github.com/Ebullioscopic)/kryoscopic) — all
 > credit for Atoll and AtollExtensionKit belongs to them, not to this
-> repository.
+> repository. Likewise, [cliamp](https://github.com/bjarneo/cliamp),
+> used below as the reference plugin, is a separate project by
+> [Bjarne Øverli](https://github.com/bjarneo) — all credit for cliamp
+> belongs to them.
 
 A broker app that holds the single authorized connection to
 [Atoll](https://github.com/Ebullioscopic/Atoll) (a macOS Dynamic Island app)
